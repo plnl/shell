@@ -32,9 +32,19 @@ yum install ipset iptables
 
 ## 安装
 
+一行命令（推荐，会自动检查依赖、下载、校验、装到 `/usr/local/bin`，然后进菜单）：
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/plnl/shell/main/ipblock/install.sh)
+```
+
+参数：`--no-run` 只装不进菜单，`--uninstall` 卸载（保留数据目录）。
+
+手动安装：
+
 ```bash
 cp ipblock.sh /usr/local/bin/ipblock.sh
-chmod 755 /usr/local/bin/ipblock.sh
+chmod 755 ipblock.sh && chmod 755 /usr/local/bin/ipblock.sh
 ipblock.sh
 ```
 

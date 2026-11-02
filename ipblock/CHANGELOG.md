@@ -4,6 +4,18 @@
 
 ---
 
+## v2.8
+
+**主题：支持免下载直接运行（`bash <(curl ...)`）**
+
+- 新增 `install.sh`：一条命令完成 检查依赖 → 下载 → 校验 → 安装 → 进菜单；支持 `--no-run`、`--uninstall`
+- 修复：用 `bash <(curl -sL .../ipblock.sh)` 或 `curl | bash` 运行时，`$0` 是 `/dev/fd/xx` 或 `bash` 而不是实体文件，`install_self` 直接 `cp` 会失败，导致 cron 与 systemd 服务指向一个不存在的路径，而且没有任何提示
+- 现在通过 `SELF_IS_FILE` 识别运行方式，非实体文件时改为从仓库下载安装；下载内容做 `#!` 首行 + `bash -n` 双重校验，防止镜像/代理返回 HTML 错误页被当成脚本装上
+- 下载源支持主备：`raw.githubusercontent.com` 失败后自动尝试 jsDelivr
+- 安装失败时明确报错并给出手动命令，不再继续创建指向空路径的定时任务（菜单 3→3、7→1，以及 DDNS/自愈 cron 的开启流程都加了失败拦截）
+
+---
+
 ## v2.7
 
 **主题：与 ufw / 宝塔面板共存**

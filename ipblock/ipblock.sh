@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  ipblock.sh  v2.7  —  IP 封禁 / 白名单 / lastb 自动封禁 管理脚本
+#  ipblock.sh  v2.8  —  IP 封禁 / 白名单 / lastb 自动封禁 管理脚本
 #  后端: 优先 nftables, 不支持时自动回退到 ipset + iptables (如 CentOS 7)
 #  数据: /etc/ipblock/blacklist.txt  /etc/ipblock/whitelist.txt
 #  规则挂在 PREROUTING(最早), 对本机入站和转发(docker/端口转发)都生效
@@ -117,6 +117,14 @@
 #      filter 回退模式(容器无 raw)最危险, 启动时和状态页都会红色警告。
 #  45. systemd 服务加 After/Wants=ufw.service, 避免 ufw 启动晚于本服务把规则覆盖掉。
 #  46. 检测 ufw/firewalld/宝塔并在状态页与菜单 8 给出共存提示。
+#
+#  v2.8 (支持免下载直接运行):
+#  47. 用 `bash <(curl -sL .../ipblock.sh)` 或 `curl | bash` 方式运行时, $0 是
+#      /dev/fd/xx 或管道而不是实体文件, 原来的 install_self 直接 cp 会失败,
+#      导致 cron 与 systemd 服务指向一个不存在的路径(而且没有任何提示)。
+#      现在识别"非实体文件"的运行方式, 改为从仓库下载后安装, 并对下载内容做
+#      首行 shebang + bash -n 校验, 防止代理返回错误页被当成脚本装上。
+#      安装失败时明确报错, 不再继续创建指向空路径的定时任务。
 # =====================================================================
 export LC_ALL=C
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -135,6 +143,12 @@ AGG_C_MIN=${AGG_C_MIN:-3}          # 同一 /24 内不同 IP 数 >= 此值 -> �
 AGG_B_HARD=${AGG_B_HARD:-20}       # 同一 /16 下要覆盖的 /24 数 > 此值 -> 直接封 /16
 AGG_NEIGHBOR=${AGG_NEIGHBOR:-8}    # 第二波出现新 /24 时, 前后各扩多少个 /24(0=不扩)
 SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
+# `bash <(curl ...)` 时 $0 是 /dev/fd/xx, `curl | bash` 时是 bash: 都不是实体文件,
+# 没法直接 cp 自己, 这种情形要走下载安装(见 install_self)
+SELF_IS_FILE=0
+[[ -n $SELF && -f $SELF && -r $SELF ]] && SELF_IS_FILE=1
+SRC_URL=${SRC_URL:-https://raw.githubusercontent.com/plnl/shell/main/ipblock/ipblock.sh}
+SRC_URL_FALLBACK=${SRC_URL_FALLBACK:-https://cdn.jsdelivr.net/gh/plnl/shell@main/ipblock/ipblock.sh}
 INSTALL_PATH=/usr/local/bin/ipblock.sh
 CRON_FILE=/etc/cron.d/ipblock-auto
 HEALTH_CRON=/etc/cron.d/ipblock-health
@@ -1046,10 +1060,44 @@ agg_preview(){
   return 0
 }
 
+# 从仓库下载自身并安装; 供 `bash <(curl ...)` 这类无实体文件的运行方式使用
+self_download(){
+  local tmp url
+  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || return 1
+  _rundir || return 1
+  tmp=$RUNDIR/self.$$.sh
+  for url in "$SRC_URL" "$SRC_URL_FALLBACK"; do
+    rm -f "$tmp"
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL --connect-timeout 8 --max-time 30 -o "$tmp" "$url" 2>/dev/null || continue
+    else
+      wget -q -T 30 -O "$tmp" "$url" 2>/dev/null || continue
+    fi
+    # 至少要像个脚本, 且能过语法检查 —— 防止镜像/代理返回 HTML 错误页被当成脚本装上
+    [[ -s $tmp ]] || continue
+    head -n 1 "$tmp" | grep -q '^#!' || continue
+    bash -n "$tmp" 2>/dev/null || continue
+    cp -f "$tmp" "$INSTALL_PATH" 2>/dev/null && chmod 755 "$INSTALL_PATH" && return 0
+  done
+  return 1
+}
+
 install_self(){
-  if [[ $SELF != "$INSTALL_PATH" ]]; then
-    cp -f "$SELF" "$INSTALL_PATH" && chmod 755 "$INSTALL_PATH" && info "脚本已安装到 $INSTALL_PATH"
+  # 已经在安装路径上, 什么都不用做
+  if [[ $SELF_IS_FILE -eq 1 && $SELF == "$INSTALL_PATH" ]]; then return 0; fi
+  if [[ $SELF_IS_FILE -eq 1 ]]; then
+    if cp -f "$SELF" "$INSTALL_PATH" 2>/dev/null && chmod 755 "$INSTALL_PATH"; then
+      info "脚本已安装到 $INSTALL_PATH"
+      return 0
+    fi
+    warn "复制到 $INSTALL_PATH 失败, 改用下载方式"
+  else
+    info "当前以管道方式运行(没有实体文件), 从仓库下载后安装到 $INSTALL_PATH"
   fi
+  if self_download; then info "已下载并安装到 $INSTALL_PATH"; return 0; fi
+  err "无法安装到 $INSTALL_PATH, 定时任务与开机恢复都不会生效"
+  err "请手动执行: curl -fsSL -o $INSTALL_PATH $SRC_URL && chmod 755 $INSTALL_PATH"
+  return 1
 }
 
 auto_menu(){
@@ -1074,7 +1122,7 @@ auto_menu(){
     case $ch in
       1) auto_scan; pause ;;
       2) agg_preview; pause ;;
-      3) install_self
+      3) install_self || { warn "脚本未安装成功, 定时任务未创建"; pause; continue; }
          # 末尾换行是 /etc/cron.d 的硬性要求
          printf '0 * * * * root %s --auto >/dev/null 2>&1\n' "$INSTALL_PATH" > "$CRON_FILE"
          chmod 644 "$CRON_FILE"; info "已开启: 每小时检测一次"; pause ;;
@@ -1453,7 +1501,7 @@ ddns_update(){ # [quiet]
 }
 
 ddns_cron_on(){
-  command -v install_self >/dev/null 2>&1 && install_self
+  install_self || return 1
   [[ -x $INSTALL_PATH ]] || { err "脚本未安装到 $INSTALL_PATH, 无法配置定时任务"; return 1; }
   # 从第 3 分钟起每 DDNS_MIN 分钟触发, 避开整点:
   # --auto 是 0 * * * *, 若 DDNS 也用 */10, 两者会在 :00 同秒抢锁,
@@ -1542,7 +1590,7 @@ health_menu_line(){
   fi
 }
 health_cron_on(){
-  command -v install_self >/dev/null 2>&1 && install_self
+  install_self || return 1
   [[ -x $INSTALL_PATH ]] || { err "脚本未安装到 $INSTALL_PATH, 无法配置定时任务"; return 1; }
   # 1-59/5 刻意错开 :00 的 lastb 任务和 :03/:13 的 DDNS 任务
   local range="1-59/$HEALTH_MIN"
@@ -1585,7 +1633,7 @@ sys_menu(){
     echo "  0. 返回主菜单"
     read -rp "请选择: " ch || exit 0
     case $ch in
-      1) install_self
+      1) install_self || { warn "脚本未安装成功, 已取消(否则服务会指向不存在的路径)"; pause; continue; }
          if ! command -v systemctl >/dev/null 2>&1; then warn "未检测到 systemd"; pause; continue; fi
          cat > "$SERVICE_FILE" <<EOF
 [Unit]

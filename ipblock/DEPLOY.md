@@ -6,14 +6,19 @@
 
 ## TL;DR
 
+一行装好并直接进菜单（推荐）：
+
 ```bash
-apt install -y nftables                                     # CentOS: yum install -y ipset iptables
-curl -fsSL -o /usr/local/bin/ipblock.sh \
-  https://raw.githubusercontent.com/plnl/shell/main/ipblock/ipblock.sh
-chmod 755 /usr/local/bin/ipblock.sh && ipblock.sh
+bash <(curl -sL https://raw.githubusercontent.com/plnl/shell/main/ipblock/install.sh)
 ```
 
 进菜单后依次按：`7`→`4`（把自己 IP 加白，**必做**）、`7`→`1`（开机恢复）、`3`→`2`（预览）、`3`→`3`（开启每小时自动封禁）。
+
+服务器访问 GitHub 慢的话，把 `raw.githubusercontent.com` 换成镜像：
+
+```bash
+bash <(curl -sL https://cdn.jsdelivr.net/gh/plnl/shell@main/ipblock/install.sh)
+```
 
 ---
 
@@ -50,22 +55,48 @@ yum install -y ipset iptables
 
 脚本运行时会自动判断用哪个后端：`nft list tables` 能跑就用 nftables，否则用 ipset + iptables。状态页第一行会显示实际后端。
 
-## 三、下载与放置
+## 三、安装脚本（三种方式，任选一种）
+
+### 方式 A：一行命令（推荐）
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/plnl/shell/main/ipblock/install.sh)
+```
+
+`install.sh` 会依次做：检查 root → 检查后端依赖 → 下载 `ipblock.sh` → 校验（shebang + `bash -n`）→ 装到 `/usr/local/bin/ipblock.sh` → 打印版本与 sha256 → 进菜单。
+
+可重复执行，等同于升级（`/etc/ipblock` 里的黑白名单不动）。常用参数：
+
+```bash
+bash <(curl -sL .../install.sh) --no-run      # 只装不进菜单
+bash <(curl -sL .../install.sh) --uninstall   # 卸载（保留数据目录）
+```
+
+### 方式 B：直接跑主脚本
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/plnl/shell/main/ipblock/ipblock.sh)
+```
+
+也能用。这种运行方式下 `$0` 是 `/dev/fd/63` 而不是实体文件，脚本会自己识别这一点，在需要装 cron / systemd 时**从仓库重新下载一份**到 `/usr/local/bin/ipblock.sh`。只是每次都多下一次，不如方式 A 干净。
+
+### 方式 C：手动下载放置
 
 ```bash
 curl -fsSL -o /usr/local/bin/ipblock.sh \
   https://raw.githubusercontent.com/plnl/shell/main/ipblock/ipblock.sh
-
 chmod 755 /usr/local/bin/ipblock.sh
 
 # 可选：校验完整性
 sha256sum /usr/local/bin/ipblock.sh
-# 95927bc021fdce3ff7f1d109a1ff8b9f1f00ba4f0c30001d0d5766466f14efc7
+# 4183be2dde0ff3430a6d78642acbc4c96c6bc19f1f162c6204a8e84a8aba7947
 ```
 
 放进 `/usr/local/bin` 有实际意义：装 systemd 服务和 cron 时，脚本会引用自己的安装路径，路径不对的话定时任务跑不起来。
 
-> **不要用 `curl ... | bash`**。脚本需要把自己复制到安装路径，而且菜单要求交互式终端，管道运行两个条件都不满足。
+### 为什么不能 `curl ... | bash`
+
+管道方式下 **stdin 是管道不是终端**，菜单的 `read` 读不到键盘输入，脚本会直接报「需要交互式终端」退出。`bash <(curl ...)`（进程替换）只替换"脚本文件"这一项，stdin 仍是你的终端，所以菜单能正常用。
 
 ## 四、首次运行（按顺序点，别跳）
 
@@ -161,18 +192,32 @@ ipblock.sh --scan     # 只打印扫描结果
 
 ## 八、升级
 
-数据在 `/etc/ipblock/`，升级不动它：
+数据在 `/etc/ipblock/`，升级不动它。重跑一次安装脚本即可（`--no-run` 表示不覆盖当前终端）：
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/plnl/shell/main/ipblock/install.sh) --no-run
+ipblock.sh --init        # 或进菜单 7 → 3 立即重新加载
+```
+
+也可以手动覆盖，效果一样：
 
 ```bash
 curl -fsSL -o /usr/local/bin/ipblock.sh \
   https://raw.githubusercontent.com/plnl/shell/main/ipblock/ipblock.sh
-chmod 755 /usr/local/bin/ipblock.sh
-ipblock.sh --init        # 或进菜单 7 → 3 立即重新加载
+chmod 755 /usr/local/bin/ipblock.sh && ipblock.sh --init
 ```
 
 跨大版本升级时留意 `CHANGELOG.md` 里的"升级注意"，例如 v2.5 调整过 DDNS 的 cron 表达式，需要重进菜单 `9` → `5` 才会更新。
 
 ## 九、卸载
+
+一键卸载（会二次确认，数据目录保留）：
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/plnl/shell/main/ipblock/install.sh) --uninstall
+```
+
+手动卸载：
 
 ```bash
 ipblock.sh               # 菜单 7 → 2 卸载 systemd 服务

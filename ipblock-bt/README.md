@@ -83,7 +83,7 @@ fail2ban     : sshd
 
 ## 其他
 
-用法、命令行模式、环境变量、文件位置、已知限制，与 [`ipblock`](../ipblock/README.md) 完全一致，把命令里的 `ipblock.sh` 换成 `ipblockbt.sh` 即可。
+用法、命令行模式、环境变量、文件位置、已知限制，与 [`ipblock`](../ipblock/README.md) 完全一致，把命令里的 `ipblock.sh` 换成 `ipblockbt.sh` 即可。新机器部署步骤见 [`ipblock/DEPLOY.md`](../ipblock/DEPLOY.md)。
 
 ## License
 

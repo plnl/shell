@@ -4,6 +4,20 @@
 
 ---
 
+## v1.2
+
+**与通用版 v2.9 同步**
+
+- 同步聚合安全阀：`protected_nets` / `seg_guard`，私网、docker 网段、含在线会话或成功登录的段不再被整段封禁，改为逐个封候选 IP；手工封禁内网段也会二次确认
+- 同步 IPv6 候选补封（聚合开启时 IPv6 原本永远不会被封）
+- 同步 `agg_compute` 的空候选文件陷阱（`FNR==NR` → `FILENAME==ARGV[1]`）
+- 同步 DDNS 同轮共享 IP 的归属继承
+- 去掉 systemd 的 `Wants=ufw.service`，只保留 `After=`（避免把已停用的 ufw 拉起来）
+- 修正提示里的服务名：`journalctl -u ipblock` / `systemctl enable --now ipblock` → `ipblockbt`；导出文件头也改为 `ipblockbt`
+- `bt_ssh_port` 现在会读 `sshd_config.d/*.conf`（被 `Include` 的配置）
+
+---
+
 ## v1.1
 
 **与通用版 v2.8 同步：支持免下载直接运行**

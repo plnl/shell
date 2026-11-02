@@ -89,7 +89,7 @@ chmod 755 /usr/local/bin/ipblock.sh
 
 # 可选：校验完整性
 sha256sum /usr/local/bin/ipblock.sh
-# 4183be2dde0ff3430a6d78642acbc4c96c6bc19f1f162c6204a8e84a8aba7947
+# db3e876cbdce1e2addc3699633f1182dfe50cfbcad0a38dd13c6f75a5cd02d83
 ```
 
 放进 `/usr/local/bin` 有实际意义：装 systemd 服务和 cron 时，脚本会引用自己的安装路径，路径不对的话定时任务跑不起来。

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  ipblock.sh  v2.8  —  IP 封禁 / 白名单 / lastb 自动封禁 管理脚本
+#  ipblock.sh  v2.9  —  IP 封禁 / 白名单 / lastb 自动封禁 管理脚本
 #  后端: 优先 nftables, 不支持时自动回退到 ipset + iptables (如 CentOS 7)
 #  数据: /etc/ipblock/blacklist.txt  /etc/ipblock/whitelist.txt
 #  规则挂在 PREROUTING(最早), 对本机入站和转发(docker/端口转发)都生效
@@ -62,10 +62,12 @@
 #  28. peer_ips 的 sed 顺序错了: 先按行尾剥 "]" 再剥端口, 而 "[v6]:22" 的 "]"
 #      不在行尾, 结果留下 "2001:db8::1]" 匹配不上, 双栈 sshd 下所有 IPv4
 #      客户端的"已建立连接"安全阀失效。改为先去端口再去方括号。
-#  29. 白名单规则由 ACCEPT 改 RETURN。filter 回退模式里 IPB 是从 INPUT/FORWARD
-#      跳进来的, ACCEPT 等于让白名单 IP 直接通过整个 INPUT(所有端口全通, 连
-#      fail2ban/docker 规则都跳过); nft 侧同理, accept 会终结整个 prerouting
-#      钩子, 连带跳过 docker 的 DNAT, 白名单 IP 访问不到容器映射端口。
+#  29. 白名单规则由 ACCEPT 改 RETURN。filter 回退模式下 IPB 是从 INPUT/FORWARD
+#      跳进来的, 那里的 ACCEPT 会让白名单 IP 直接通过整个 INPUT(所有端口全通,
+#      连 fail2ban/docker 规则都跳过), 所以换 RETURN 是实质修复。
+#      注: nft 基础链里的 accept 只作用于本链, 同 hook 上优先级更低的链(如 docker
+#      的 dstnat -100)照常执行, 不会"跳过整个钩子"; 基础链中 return 与 accept 等价,
+#      那边改成 return 只是语义统一。(原先这里的说法是错的, 已更正)
 #  30. 菜单 8 的规则过滤由"黑名单式"改为"白名单式": 只认
 #      `-A 链 -s 地址 -j DROP|ACCEPT|REJECT` 和 `--match-set ... src -j ...`,
 #      带任何附加条件(-m conntrack/state/limit/recent/connlimit/mac/time、-p、
@@ -115,7 +117,8 @@
 #      ipt 后端用 raw 表(ufw 的 user.rules 只含 filter/nat), 常见 reload 影响不到。
 #  44. 新增 --health 自愈: 规则被清掉就重新加载, 配合 cron 每 HEALTH_MIN 分钟检查。
 #      filter 回退模式(容器无 raw)最危险, 启动时和状态页都会红色警告。
-#  45. systemd 服务加 After/Wants=ufw.service, 避免 ufw 启动晚于本服务把规则覆盖掉。
+#  45. systemd 服务加 After=… ufw.service, 避免 ufw 启动晚于本服务把规则覆盖掉。
+#      只加 After 不加 Wants: Wants 会把已安装但停用的 ufw 拉起来。
 #  46. 检测 ufw/firewalld/宝塔并在状态页与菜单 8 给出共存提示。
 #
 #  v2.8 (支持免下载直接运行):
@@ -125,6 +128,26 @@
 #      现在识别"非实体文件"的运行方式, 改为从仓库下载后安装, 并对下载内容做
 #      首行 shebang + bash -n 校验, 防止代理返回错误页被当成脚本装上。
 #      安装失败时明确报错, 不再继续创建指向空路径的定时任务。
+#
+#  v2.9 (聚合封禁的安全阀 + 若干修正):
+#  48. 聚合封禁会把私网 / docker 网段整段封掉(实测 3 个 192.168.1.x -> 192.168.1.0/24,
+#      3 个 172.17.0.x -> 172.17.0.0/24), 段里有别人的在线会话时也照封。新增
+#      protected_nets(本机网卡所在网段 + 私网/CGNAT/链路本地/环回) 与 seg_guard:
+#      段命中保护网段/当前 SSH/在线会话/近期成功登录 -> 不封段, 降级为逐个封候选 IP;
+#      单 IP 落在保护网段内直接跳过。
+#  49. 开启聚合(默认开)时 IPv6 候选永远不会进黑名单 —— agg_compute 只处理 IPv4,
+#      输出为空但日志照写"新增 0 条"。现在 agg_apply 末尾补封 IPv6 候选。
+#  50. agg_compute 用 FNR==NR 区分两个输入文件, 候选文件为空时会把黑名单当成候选
+#      (单 IP 被重新输出, /24 被丢掉)。改用 FILENAME==ARGV[1]。
+#  51. DDNS: 两个共享 IP 的域名同一轮一起换 IP 时, 后者看不到前者刚写进 $tmp 的归属,
+#      被记成 owned=0; 两个域名都删掉后该 IP 永久留在白名单。继承判断扩展到 $tmp。
+#  52. systemd 去掉 Wants=ufw.service(只留 After 保证顺序): Wants 会在 ufw 已安装
+#      但被停用的机器上把它拉起来。
+#  53. 修正注释: nft 基础链里的 accept 只作用于本链, 同 hook 上优先级更低的链(如
+#      docker 的 dstnat -100)照常执行, 并不会"跳过整个钩子"; 基础链中 return 与
+#      accept 等价, 所以改成 return 是语义统一, 不是功能修复。iptables filter 回退
+#      模式下换 RETURN 才是实质修复(那里的 ACCEPT 会绕过整个 INPUT)。
+#  54. 手工封禁(菜单 1)遇到内网/本机网段时也提示一次, 需二次确认。
 # =====================================================================
 export LC_ALL=C
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -695,6 +718,12 @@ do_block(){
       read -rp "仍要封禁? (y/N): " ans || exit 0
       [[ $ans == [yY] ]] || continue
     fi
+    # 私网/本机网段: 封了通常没意义, 还可能切断与内网/容器的互访, 至少提示一次
+    if in_protected "$e"; then
+      warn "$e 属于内网或本机网段 ($SEG_GUARD), 封禁后可能与内网/容器断连"
+      read -rp "仍要封禁? (y/N): " ans || exit 0
+      [[ $ans == [yY] ]] || continue
+    fi
     if in_list "$WL" "$e"; then warn "$e 在白名单中,跳过"; continue; fi
     # 只对 CIDR 行做包含判断, 用 grep 先把非 CIDR 行滤掉, 避免 O(N) 的纯 bash 循环
     if [[ $e == */* ]]; then
@@ -830,7 +859,7 @@ agg_compute(){ # $1=候选IP文件  $2=现有黑名单  输出最终条目(每�
     b = q[1] "." q[2]
     if (!(c in seen24)) { seen24[c] = 1; arr[b] = arr[b] " " q[3]; nb[b]++ }
   }
-  FNR == NR {                              # 第一份: 本轮候选 IP
+  FILENAME == ARGV[1] {                    # 第一份: 本轮候选 IP
     ip = $0; gsub(/[ \t]/, "", ip)
     if (ip !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) next
     if (ip in seen) next
@@ -932,35 +961,103 @@ compact_bl(){
   return 0
 }
 
+# 这些网段整体封禁会切断本机与内网/容器的互通, 聚合时必须避让:
+#   本机各网卡地址所在网段 + 私网 / CGNAT / 链路本地 / 环回
+protected_nets(){
+  {
+    if command -v ip >/dev/null 2>&1; then
+      ip -o -4 addr show 2>/dev/null | awk '{print $4}'
+      ip -o -6 addr show scope global 2>/dev/null | awk '{print $4}'
+    fi
+    printf '%s\n' 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 \
+                  169.254.0.0/16 fc00::/7 fe80::/10 ::1/128
+  } | grep . | sort -u
+}
+# 两个条目是否相交(任一包含另一方)
+net_intersects(){ ip_match "$1" "$2" || ip_match "$2" "$1"; }
+# $1 是否落在受保护网段内; 命中时 SEG_GUARD 记下是哪个网段
+in_protected(){
+  local p
+  while IFS= read -r p; do
+    [[ -z $p ]] && continue
+    if net_intersects "$1" "$p"; then SEG_GUARD=$p; return 0; fi
+  done < <(protected_nets)
+  return 1
+}
+# 段 $1 是否踩到保护对象: 受保护网段 / 当前 SSH IP / 在线会话 / 近期成功登录
+# 命中返回 0, 原因写入 SEG_GUARD
+seg_guard(){
+  local ip
+  in_protected "$1" && { SEG_GUARD="内网或本机网段 $SEG_GUARD"; return 0; }
+  if [[ -n $SSH_IP ]] && ip_match "$1" "$SSH_IP"; then
+    SEG_GUARD="当前 SSH IP $SSH_IP"; return 0
+  fi
+  while IFS= read -r ip; do
+    [[ -z $ip ]] && continue
+    if ip_match "$1" "$ip"; then SEG_GUARD="在线会话或成功登录 $ip"; return 0; fi
+  done < <( { peer_ips; (( SKIP_SUCCESS )) && login_ips; } )
+  return 1
+}
+
 agg_apply(){ # $1=候选IP文件 $2=quiet, 结果条数放 AGG_ADDED
   local f=$1 quiet=$2 e ip
   AGG_ADDED=0
-  local out; out=$(mktemp "${RUNDIR:-/tmp}/agg.XXXXXX") || return 1
+  _rundir || return 1
+  local out; out=$(mktemp "$RUNDIR/agg.XXXXXX") || return 1
   agg_compute "$f" "$BL" > "$out" 2>/dev/null
+
   while IFS= read -r e; do
     [[ -z $e ]] && continue
-    # 段里含当前 SSH IP -> 不封段, 改回逐个封里面的候选 IP
-    if [[ -n $SSH_IP ]] && ip_match "$e" "$SSH_IP"; then
-      log "AGG SKIP $e 含当前 SSH IP $SSH_IP, 降级为逐 IP"
-      [[ $quiet ]] || warn "$e 含你的 SSH IP, 改为逐个封禁"
-      while IFS= read -r ip; do
-        [[ -z $ip ]] && continue
-        ip_match "$e" "$ip" || continue
-        grep -qxF -- "$ip" "$BL" && continue
-        echo "$ip" >> "$BL"; AGG_ADDED=$((AGG_ADDED+1))
-        log "AGG BAN $ip (段 $e 降级)"
-      done < "$f"
-      continue
+    if [[ $e == */* ]]; then
+      # 段封禁前必须过安全阀: 私网/本机网段、当前 SSH、在线会话, 任一命中就降级成逐 IP
+      if seg_guard "$e"; then
+        log "AGG SKIP $e 与 $SEG_GUARD 相交, 降级为逐 IP"
+        [[ $quiet ]] || warn "$e 涉及$SEG_GUARD, 改为逐个封禁候选 IP"
+        while IFS= read -r ip; do
+          [[ -z $ip || $ip == *:* ]] && continue
+          ip_match "$e" "$ip" || continue
+          # 降级后同样是私网/本机网段里的 IP 也不封(如 192.168.x 段里的候选)
+          if in_protected "$ip"; then
+            log "AGG SKIP $ip 位于内网/本机网段 $SEG_GUARD (段 $e 降级)"
+            continue
+          fi
+          grep -qxF -- "$ip" "$BL" && continue
+          echo "$ip" >> "$BL"; AGG_ADDED=$((AGG_ADDED+1))
+          log "AGG BAN $ip (段 $e 降级)"
+        done < "$f"
+        continue
+      fi
+    else
+      # 单 IP 落在内网/本机网段: 封了没意义, 还可能切断内部互通
+      if in_protected "$e"; then
+        log "AGG SKIP $e 位于内网/本机网段 $SEG_GUARD"
+        continue
+      fi
     fi
     grep -qxF -- "$e" "$BL" && continue
     echo "$e" >> "$BL"; AGG_ADDED=$((AGG_ADDED+1))
     log "AGG BAN $e"
-    [[ $quiet ]] || info "封禁段: $e"
+    [[ $quiet ]] || info "封禁: $e"
   done < "$out"
+
+  # agg_compute 只做 IPv4; IPv6 候选逐个封(候选阶段已过 risky_ip 过滤)
+  while IFS= read -r ip; do
+    [[ $ip == *:* ]] || continue
+    if in_protected "$ip"; then
+      log "AGG SKIP $ip 位于内网/本机网段 $SEG_GUARD"
+      continue
+    fi
+    grep -qxF -- "$ip" "$BL" && continue
+    echo "$ip" >> "$BL"; AGG_ADDED=$((AGG_ADDED+1))
+    log "AGG BAN $ip (IPv6)"
+    [[ $quiet ]] || info "封禁: $ip"
+  done < "$f"
+
   rm -f "$out"
   (( AGG_ADDED > 0 )) && compact_bl
   return 0
 }
+
 
 # 从 lastb 收集候选 IP 写入 $1, 结果数放 CAND_N / CAND_SK
 auto_candidates(){ # $1=输出文件 $2=quiet
@@ -1450,7 +1547,13 @@ ddns_update(){ # [quiet]
     [[ $owned == 1 && -n $oldip && $oldip != pending ]] && stale+=("$oldip")
     if in_list "$WL" "$newip"; then
       # 新 IP 已在白名单: 若已有其它 DDNS 记录在管它, 继承管理权
-      if ddns_ip_owned "$newip"; then owned=1; else owned=0; fi
+      # 旧 conf 里已有别的记录在管它, 或本轮前面的域名刚把它写进 $tmp -> 继承管理权
+      if ddns_ip_owned "$newip" \
+         || awk -F'|' -v ip="$newip" '$2==ip && $4!="0" {f=1} END{exit !f}' "$tmp"; then
+        owned=1
+      else
+        owned=0
+      fi
     else
       echo "$newip" >> "$WL"; owned=1
     fi
@@ -1640,7 +1743,6 @@ sys_menu(){
 Description=ipblock restore firewall block rules
 # ufw.service 必须排在前面: ufw 启动时会 iptables-restore, 晚于本服务会覆盖规则
 After=network.target nftables.service firewalld.service iptables.service ufw.service
-Wants=ufw.service
 
 [Service]
 Type=oneshot

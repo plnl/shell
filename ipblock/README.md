@@ -1,0 +1,177 @@
+# ipblock
+
+单文件 IP 封禁 / 白名单管理脚本。交互式菜单，同时支持命令行模式供 cron 调用。
+
+- **双后端**：优先 nftables；没有 nft 时自动回退 `ipset + iptables`（CentOS 7 这类老系统）
+- **规则挂 PREROUTING**：本机入站和转发（docker / 端口转发）都拦得住
+- **白名单优先**：白名单命中直接放行，不进黑名单判断
+- **写操作事务化**：改文件前快照，`apply` 失败自动回滚文件并按旧文件重载规则，永远保持"文件 = 内核规则"
+
+## 依赖
+
+| 项 | 要求 |
+|---|---|
+| Shell | bash 3.2+（macOS 自带的那版也能跑，不依赖 bash 4 特性） |
+| 权限 | root |
+| 后端（二选一） | `nftables`，或 `ipset` + `iptables` |
+| 可选 | `ss`、`last`、`lastb`、`dig`/`nslookup`、`systemctl`、`flock` |
+
+Debian/Ubuntu：
+
+```bash
+apt install nftables            # 或 apt install ipset iptables
+```
+
+CentOS/RHEL：
+
+```bash
+yum install ipset iptables
+```
+
+## 安装
+
+```bash
+cp ipblock.sh /usr/local/bin/ipblock.sh
+chmod 755 /usr/local/bin/ipblock.sh
+ipblock.sh
+```
+
+脚本自己也会在需要时（装 systemd 服务或 cron）把自己复制到 `/usr/local/bin/ipblock.sh`。
+
+> **第一次用请先做这一步**：进菜单 `7 → 4`，把自己当前的 SSH IP 加入白名单。否则自动封禁有概率把你自己的出口 IP 也封掉。
+
+## 菜单
+
+```
+1. 输入封禁 IP / IP段
+2. 查看封禁 IP
+3. 读取 lastb 自动封禁 (失败 >= 5 次, 按段聚合)
+4. 手动解封 IP / IP段
+5. 设置 IP 白名单
+6. 查看 IP 白名单
+7. 开机自启 / 系统状态
+8. 检查并导入系统现有防火墙规则 (统一管理)
+9. DDNS 动态域名白名单 (域名 IP 变化自动同步)
+0. 退出
+```
+
+### 3. lastb 自动封禁
+
+```
+1. 立即检测一次
+2. 预览本轮会封什么 (不写入规则)   ← 建议先点这个
+3. 开启每小时自动检测
+4. 关闭每小时自动检测
+5. 开关按段聚合
+6. 查看最近日志
+```
+
+按段聚合规则（`AGG_ENABLE=1` 时生效）：
+
+| 条件 | 动作 |
+|---|---|
+| 同一 /24 内不同 IP ≥ `AGG_C_MIN`（默认 3） | 封整个 /24 |
+| 该 /16 已封过 /24，本轮又出现新 /24 | 围绕新 /24 前后各扩 `AGG_NEIGHBOR`（默认 8）个 /24，只在本 /16 内扩 |
+| 要覆盖的 /24 超过 `AGG_B_HARD`（默认 20） | 直接封整个 /16 |
+| 单 IP 落在已封网段内 | 从名单剔除 |
+
+安全阀：待封网段里含当前 SSH IP 时**不封该段**，降级为逐个封段内候选 IP。
+
+### 8. 导入现有防火墙规则
+
+只读扫描 nftables / iptables / ipset / firewalld / ufw（含 fail2ban 的 `f2b-*` 链与集合），把"源 IP"合并进黑名单/白名单统一管理。**不修改也不删除任何原有规则。**
+
+只导入"除源地址和目标外没有任何附加条件"的规则；带 `-p`、`--dport`、`-m conntrack`、`!` 取反的一律跳过并计数——否则"只封 22 端口"会被导成"封整个 IP"，语义完全变了。
+
+### 9. DDNS 动态域名白名单
+
+```
+1. 查看域名与解析状态
+2. 添加 DDNS 域名
+3. 删除 DDNS 域名
+4. 立即检测并更新
+5. 开启自动检测 (每 10 分钟)
+6. 关闭自动检测
+```
+
+策略要点：
+
+- 四级降级解析：`getent ahostsv4` → `getent hosts` → `dig` → `nslookup`（`nslookup` 会过滤掉 `Server:` 行，避免把本机 DNS 地址当成解析结果）
+- 解析失败**保留旧 IP**并标记 `pending`，不因 DNS 抖动撤规则
+- 记录里带 `owned` 字段：`1` 表示这个 IP 是脚本写进白名单的，`0` 表示用户手工加过同一个 IP。域名换 IP / 删域名时只撤 `owned=1` 的，不误删手工条目
+- IP 未变但白名单条目被手工删掉 → 下一轮自动补回
+- 只跟踪 A 记录（IPv4）
+
+## 命令行模式
+
+```bash
+ipblock.sh --init      # 加载规则(开机动作用)
+ipblock.sh --auto      # 执行一次 lastb 检测(cron 用)
+ipblock.sh --ddns      # 执行一次 DDNS 同步(cron 用)
+ipblock.sh --health    # 检查规则是否还在, 丢了就重载(cron 用)
+ipblock.sh --scan      # 只打印扫描结果, 不改任何东西
+ipblock.sh --help
+```
+
+## 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `THRESHOLD` | 5 | lastb 中出现 ≥ 该次数则自动封禁 |
+| `BAN_WINDOW` | `-24hours` | lastb 只统计最近这段时间（老系统不支持 `-s` 时退化为全量） |
+| `SKIP_SUCCESS` | 1 | 近期成功登录过 / 有活动连接 / 属于当前 SSH 的 IP 不自动封禁 |
+| `AGG_ENABLE` | 1 | 按段聚合开关 |
+| `AGG_C_MIN` | 3 | 同一 /24 内不同 IP 达到该值 → 封 /24 |
+| `AGG_NEIGHBOR` | 8 | 扩张时前后各扩多少个 /24 |
+| `AGG_B_HARD` | 20 | 同一 /16 下要覆盖的 /24 超过该值 → 封 /16 |
+| `DDNS_MIN` | 10 | DDNS 检测间隔（分钟） |
+| `HEALTH_MIN` | 5 | 规则自愈检查间隔（分钟） |
+
+## 文件位置
+
+| 路径 | 用途 |
+|---|---|
+| `/etc/ipblock/blacklist.txt` | 黑名单，每行一个 IP 或 CIDR |
+| `/etc/ipblock/whitelist.txt` | 白名单，同上 |
+| `/etc/ipblock/ddns.conf` | DDNS 记录，格式 `domain\|ip\|时间戳\|owned` |
+| `/var/log/ipblock.log` | 操作日志（超过 2MB 自动截断保留最后 2000 行） |
+| `/var/lock/ipblock.lock` | 命令行模式的互斥锁 |
+| `/usr/local/bin/ipblock.sh` | 安装位置 |
+| `/etc/cron.d/ipblock-auto` | lastb 自动封禁（`0 * * * *`） |
+| `/etc/cron.d/ipblock-ddns` | DDNS 同步（`3-59/10`，错开整点） |
+| `/etc/cron.d/ipblock-health` | 规则自愈（`1-59/5`） |
+| `/etc/systemd/system/ipblock.service` | 开机恢复规则 |
+
+数据文件可以手工编辑（每行一个条目，支持 `#` 注释），脚本启动时会做一次清洗：去空行、去注释、去重复、丢弃非法条目并告警。**非法条目一定要丢弃**，否则 `nft -f` 或 `ipset restore` 会整批失败，导致所有改动都不生效。
+
+## 与系统已有防火墙共存
+
+| 场景 | 影响 |
+|---|---|
+| ufw / firewalld 普通 reload | **碰不到本脚本的规则**——nft 后端用独立表 `inet ipblock`，ipt 后端用 `raw` 表（ufw 的 user.rules 只含 filter/nat） |
+| `ufw reset` / 面板重装防火墙 | 会清掉全部表，规则丢失 → 靠 `--health` 自愈恢复 |
+| 容器（OpenVZ/LXC）无 `raw` 表 | 回退到 `filter` 表的 INPUT/FORWARD，此时 ufw reload 会把链清掉，**必须开自愈** |
+
+白名单的含义是"本脚本不拦"，**不是**绕过 ufw。若 ufw 没放行某端口，白名单里的 IP 照样连不上。
+
+若机器上装了宝塔面板，建议改用 [`ipblock-bt`](../ipblock-bt) 版，两者资源命名完全隔离。
+
+## 已知限制
+
+- IPv6 支持封禁与网段匹配，但自动聚合封禁只针对 IPv4
+- DDNS 只跟踪 A 记录；一个域名有多个 A 记录时只放行排序后的第一条，并在日志里提示
+- 手工封禁大段（`/8`、`/16`）不做聚合判断，由操作者自行确认（`/0`、`127/8` 会被拒绝）
+- `lastb` 的 `-s` 时间窗口在极老的系统上不支持，会退化为全量统计并在日志里记一次
+
+## 归档版本
+
+| 文件 | 说明 |
+|---|---|
+| `archive/ipblock-v1.0.sh` | 最初版本，保留作对照（存在规则静默失效、把自己锁死等问题，不建议使用） |
+| `archive/ipblock-v2.6.sh` | v2.6，功能完整但不含 ufw/宝塔共存检测与 `--health` 自愈 |
+
+`archive/` 下的脚本与当前版本共用 `/etc/ipblock`、`inet ipblock` 表、`IPB` 链和 `ipblock.service`，**同一台机器只能装其中一个**。
+
+## License
+
+[MIT](../LICENSE)

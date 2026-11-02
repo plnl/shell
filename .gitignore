@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# 编辑器临时文件
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# 脚本运行期备份
+*.bak
+*.tmp
+
+# shell 脚本语法检查缓存
+shellcheck-cache/

@@ -89,7 +89,7 @@ chmod 755 /usr/local/bin/ipblock.sh
 
 # 可选：校验完整性
 sha256sum /usr/local/bin/ipblock.sh
-# db3e876cbdce1e2addc3699633f1182dfe50cfbcad0a38dd13c6f75a5cd02d83
+# bc27adba3d1764882090163983e4ce75d51d22c500c94b7ba91668f33b2710cc
 ```
 
 放进 `/usr/local/bin` 有实际意义：装 systemd 服务和 cron 时，脚本会引用自己的安装路径，路径不对的话定时任务跑不起来。
@@ -140,6 +140,16 @@ sudo ipblock.sh
 ### 6.（可选）`9` → `2` 加 DDNS 域名
 
 家宽动态 IP 时用。解析失败会标记 `pending` 而不是撤规则，自动检测默认每 10 分钟一次。
+
+### 7.（可选）`10` 管理 SSH 登录方式
+
+先 `10` → `8` 备份 sshd 配置，再决定要不要改：
+
+- `10` → `2`：装密钥（粘贴公钥；直接选 3 会现场生成一对，私钥只显示一次）
+- `10` → `3`：切换「仅密钥 / 仅密码 / 密钥+密码」
+- `10` → `4`：root 登录策略（推荐「只允许密钥」）
+
+改完**别关当前窗口**，另开一个终端用密钥登录成功后再关。所有改动都有备份，`10` → `8` → `r` 可以回滚。
 
 ## 五、验证是否生效
 
@@ -265,6 +275,11 @@ sudo -E ipblock.sh
 ```bash
 AGG_B_HARD=40 ipblock.sh        # 临时提高阈值，跑一次
 ```
+
+**改成「仅密钥」后连不上了**
+先用还没断的会话打开菜单 `10` → `8` → `r` 回滚；如果已经断线，用云控制台的 VNC / 救援模式进系统，把 `/etc/ssh/ipblock-backup/<时间戳>/files/1` 拷回 `/etc/ssh/sshd_config`，再 `systemctl restart ssh`。
+
+预防：切之前先另开一个终端用私钥登录成功，再关旧会话。
 
 **机器上还有宝塔面板**
 换 [`ipblock-bt`](../ipblock-bt)，命名全部隔离，能避免面板 reload 把规则清掉。

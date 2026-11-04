@@ -149,6 +149,8 @@ ipblock.sh
 - **改端口**会提示放行安全组 / ufw / firewalld，并用 restart 而不是 reload
 
 > 这一项会写 `/etc/ssh/sshd_config`，需要 root。第一次用建议先做菜单 8 备份，或在云控制台留一个 VNC 入口兜底。
+>
+> 只想做 SSH 加固、不需要 IP 封禁的机器，可以用独立版 [`sshmenu`](../sshmenu/README.md)（同一套实现，多了 `--status` 命令行）。
 
 ## 命令行模式
 

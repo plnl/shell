@@ -8,6 +8,7 @@
 |---|---|---|---|
 | [`ipblock/`](./ipblock) | IP 封禁 / 白名单管理，支持 lastb 自动封禁、按段聚合、DDNS 动态白名单、导入系统现有防火墙规则、SSH 登录方式管理 | v2.10 | Debian/Ubuntu/CentOS，nftables 或 ipset+iptables |
 | [`ipblock-bt/`](./ipblock-bt) | 同上，但资源命名全部隔离，专供装了**宝塔面板 + ufw/firewalld** 的机器使用 | v1.3 | 宝塔面板共存场景 |
+| [`sshmenu/`](./sshmenu) | SSH 登录方式与密钥管理：查看/切换登录方式、安装密钥、root 策略、改端口、配置备份回滚 | v1.0 | 任意装了 openssh-server 的 Linux |
 
 ## 文档
 
@@ -18,6 +19,8 @@
 | [ipblock 变更日志](./ipblock/CHANGELOG.md) | v1.0 → v2.10 全部改动 |
 | [ipblock-bt 说明](./ipblock-bt/README.md) | 宝塔面板环境专用版，含命名隔离对照表 |
 | [ipblock-bt 变更日志](./ipblock-bt/CHANGELOG.md) | v1.0 起 |
+| [sshmenu 说明](./sshmenu/README.md) | SSH 登录管理：菜单、命令行、安全机制、排错 |
+| [sshmenu 变更日志](./sshmenu/CHANGELOG.md) | v1.0 起 |
 
 ## 快速开始
 

@@ -8,7 +8,7 @@
 #   srvmenu                 交互菜单
 #   srvmenu overview        直接输出某一节（可脚本化）
 #        services | health | ports | top | containers | logs | backups | drift
-#   srvmenu restart workbuddy-web    直接对某个 unit 操作（需 root）
+#   srvmenu restart my-web            直接对某个 unit 操作（需 root）
 #   srvmenu docker restart workbuddy2api
 #   srvmenu nginx reload | check
 #
@@ -638,7 +638,7 @@ srvmenu ${VERSION} —— 本机运维菜单
   srvmenu health --quiet            只输出异常项（可放进 cron / 监控）
 
 三层托管的区别（记牢，排查时会救命）：
-  systemd    blog-*、workbuddy-web、zerotier-one、docker …  用 systemctl
+  systemd    业务服务、zerotier-one、docker …              用 systemctl
   Docker     workbuddy2api、plnl-*、wgdashboard …           用 docker
   init.d     nginx、php-fpm、bt、btwaf …                    用 service / 直接命令
              nginx 尤其不能用 systemctl：is-active 恒为 inactive
@@ -655,9 +655,9 @@ EOF
 WBM_DIR="${WBM_DIR:-/opt/workbuddy-manager}"
 WBM_UPSTREAM="${WBM_UPSTREAM:-/opt/workbuddy2api}"
 WBM_REPO="ithtelab/workbuddy-manager"
-WBM_IMAGE="workbuddy2api-wb2api:latest"
+WBM_IMAGE="${WBM_IMAGE:-workbuddy2api-wb2api:latest}"
 WBM_SNAP_ROOT="/root/backups/workbuddy-manager/pre-update"
-WBM_SVC="workbuddy-web"
+WBM_SVC="${WBM_SVC:-workbuddy-web}"
 
 wbm_version_raw() { tr -d '[:space:]' < "$WBM_DIR/.version" 2>/dev/null; }
 wbm_env() { # 从 .env 取一个键，取不到就静默返回空

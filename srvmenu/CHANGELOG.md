@@ -1,5 +1,17 @@
 # 变更日志
 
+## v1.1.1
+
+**登记表外置到 `/etc/srvmenu.conf`，脚本内置只留通用示例**
+
+- 机器相关的服务清单不再写死在脚本里：启动时 `source /etc/srvmenu.conf` 覆盖内置示例，
+  也可用 `SRVMENU_CONF=/path/to/conf` 临时换一份
+- 升级（`install.sh` 直接覆盖 `/usr/local/bin/srvmenu`）不再冲掉本机配置；
+  `install.sh` 会提示检测到 / 未检测到该文件
+- `2) 服务清单` 顶部显示当前生效的登记表来源
+- 内置示例精简为 `docker` / `zerotier-one` 两条，其余以注释形式给出写法
+- 依赖基线明确为 bash 4.4+（空数组在 `set -u` 下的展开行为）
+
 ## v1.1
 
 **新增「更新 / 回滚」四个菜单（14~17），给宿主 systemd + Docker 上游的面板类项目用**

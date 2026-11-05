@@ -20,7 +20,7 @@
 # ============================================================
 set -uo pipefail
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 HTTP_TIMEOUT="${HTTP_TIMEOUT:-4}"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -30,33 +30,38 @@ else
   C_R=; C_G=; C_Y=; C_B=; C_D=; C_0=
 fi
 
-# ── 服务登记表 ────────────────────────────────────────────────
-# 格式：名称|说明|探测|风险
-#   探测： http:<URL>:<允许码，多个用 |>   port:<端口>   zt（ZeroTier 在线判定）   none
-#   风险： 留空=普通；DANGER=停之前要手打 YES；ADAPTER=动它会连带别的
-# 新装服务请往这里加一行，加了之后「9) 未登记项」里就不会再提示它。
+# ── 服务登记表（通用示例）──────────────────────────────────────
+# 这台机器真实的清单不写在这里，放 /etc/srvmenu.conf —— 由下面 source 读入并覆盖默认值。
+# 这样升级（install.sh 直接覆盖 /usr/local/bin/srvmenu）不会冲掉本机配置。
+#
+# 格式：名称|说明|探测|风险|后果说明
+#   探测： http:<URL>:<允许码，多码用 |>   port:<端口>   zt（ZeroTier 在线）  docker   none
+#   风险： 留空=普通；DANGER / ADAPTER = 停之前必须手打 YES
 UNITS=(
-  "blog-admin|博客后台（写作/发布/媒体库，8099）|http:http://127.0.0.1:8099/healthz:200|停掉=无法发文、无法发布"
-  "blog-analytics|博客统计采集 + 点赞接口（8098）|port:8098|停掉=访问统计与点赞失效"
-  "blog-comments|博客评论与注册服务（8097）|port:8097|停掉=评论区不可用"
-  "workbuddy-web|WorkBuddy 面板（账号池管理 + /v1 网关，7864）|http:http://127.0.0.1:7864/api/healthz:200|停掉=面板与网关不可用"
-  "zerotier-one|ZeroTier 组网（9993）|zt|DANGER|停掉=ZT 访问立刻断开，你本人可能当场掉线"
   "docker|容器引擎（所有容器的父进程）|docker|DANGER|停掉=下面所有容器一起停"
-  "BT-FirewallServices|宝塔防火墙服务|none||慎动，动之前确认安全组规则还在"
-  "plnl-agent|plnl 站点 agent|none|"
-  "mynq-agent|mynq agent|none|"
-  "site_total|站点访问统计|none|"
+  "zerotier-one|ZeroTier 组网（没装可删掉这行）|zt|DANGER|停掉=内网访问立刻断开，可能连你也一起断"
+  # ── 按需添加，格式同上 ────────────────────────────────────
+  # "my-web|我的 Web 服务|http:http://127.0.0.1:8080/healthz:200|停掉=网站不可用"
+  # "postgresql|本机数据库|port:5432|DANGER|停掉=业务直接报错"
 )
 
-# 容器登记表：名称|说明|风险|可选标记（OPT=已停用/已卸载，缺失不算异常）
+# 容器登记表：名称|说明|风险|OPT（OPT=已停用/已卸载，缺失不算异常）
 CONTAINERS=(
-  "workbuddy2api|WorkBuddy 上游账号池网关（127.0.0.1:7863）||"
-  "plnl-server|plnl 站点服务（8080 / 8999）||"
-  "plnl-postgres|PostgreSQL 16（plnl 站点数据库）|DANGER|"
-  "plnl-redis|Redis 7||"
-  "wgdashboard|WireGuard 面板（10086）||"
-  "lsky-pro|兰空图床（已停用，可删）||OPT"
+  # "myapp|我的应用容器（8080）||"
+  # "old-app|已停用的旧容器||OPT"
 )
+
+# ── 本机配置覆盖 ──────────────────────────────────────────────
+# 把机器相关的登记表写到 /etc/srvmenu.conf（里面直接写 UNITS=(...) / CONTAINERS=(...)）；
+# 也可以用 SRVMENU_CONF=/path/to/conf 临时换一份配置。
+SRVMENU_CONF="${SRVMENU_CONF:-/etc/srvmenu.conf}"
+SRVMENU_CONF_SRC="内置示例"
+if [[ -r "$SRVMENU_CONF" ]]; then
+  # shellcheck disable=SC1090
+  if source "$SRVMENU_CONF" 2>/dev/null; then
+    SRVMENU_CONF_SRC="$SRVMENU_CONF"
+  fi
+fi
 
 # 判断「未登记」时要忽略的系统自带 unit（比较前会去掉 .service 后缀）
 IGNORE_UNIT_RE='^(systemd-|dbus|cron|ssh|apparmor|atd|exim4|e2scrub|fstrim|man-db|apt-daily|dpkg-db-backup|keyboard-setup|console-setup|ifupdown|qemu-guest-agent|networking|rsyslog|getty@|user@|serial-getty|polkit|modprobe|cgcr|blk-availability|user-runtime-dir|containerd|ufw|docker-)'
@@ -185,6 +190,7 @@ overview() {
 # ── 2. 服务清单 ───────────────────────────────────────────────
 services() {
   head1 "systemd 服务"
+  dim "登记表来源：$SRVMENU_CONF_SRC"
   printf '  %-5s %-9s %-22s %s\n' "STAT" "BOOT" "SERVICE" "说明"
   dim "STAT=RUN 运行 / STOP 停止 / FAIL 失败     BOOT=enabled 表示开机自启"
   local row n d spec risk st en mc mp

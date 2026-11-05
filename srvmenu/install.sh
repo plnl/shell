@@ -43,8 +43,8 @@ done
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die "需要 root：sudo bash install.sh"
 
 # bash 版本（数组与 [[ ]] 至少 3.2，CentOS 7 自带 4.2 也够）
-if [[ -n "${BASH_VERSINFO:-}" ]] && (( BASH_VERSINFO[0] < 3 )); then
-  die "bash 版本过低：${BASH_VERSION}"
+if [[ -n "${BASH_VERSINFO:-}" ]] && (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+  die "bash 版本过低：${BASH_VERSION}（需要 4.4+，Debian 10 / Ubuntu 18.04 起自带）"
 fi
 
 # 下载器
@@ -80,6 +80,11 @@ info "语法检查通过（$(wc -l < "$TMP" | tr -d ' ') 行）"
 
 install -m 755 -o root -g root "$TMP" "$INSTALL_PATH"
 info "已安装到 $INSTALL_PATH"
+if [[ -f /etc/srvmenu.conf ]]; then
+  info "保留本机登记表 /etc/srvmenu.conf（升级不覆盖）"
+else
+  warn "还没有 /etc/srvmenu.conf，清单里只会显示内置示例；照 README 写一份即可"
+fi
 
 # 环境概览：不阻断，只提示能探测到什么
 command -v systemctl >/dev/null 2>&1 || warn "没有 systemctl（非 systemd 系统），服务页会空白"

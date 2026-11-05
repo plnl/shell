@@ -56,7 +56,7 @@
 ## 依赖与安装
 
 ```bash
-# 依赖: bash 3.2+ / root / iproute2(ss) ；有 systemd 与 docker 时功能更全
+# 依赖: bash 4.4+ / root / iproute2(ss) ；有 systemd 与 docker 时功能更全
 bash <(curl -sL https://raw.githubusercontent.com/plnl/shell/main/srvmenu/install.sh)
 ```
 
@@ -99,21 +99,27 @@ srvmenu update rollback [时间戳]
 
 ## 登记表：让它认识你的服务
 
-脚本顶部两个数组就是全部配置，加一行即可：
+**机器相关的清单不写在脚本里**，而是 `/etc/srvmenu.conf`——脚本启动时 `source` 它，覆盖内置示例。这样 `install.sh` 升级只会替换 `/usr/local/bin/srvmenu`，**不会冲掉你的配置**。
 
 ```bash
-# 名称|说明|探测|风险
+# /etc/srvmenu.conf
 UNITS=(
   "blog-admin|博客后台（写作/发布，8099）|http:http://127.0.0.1:8099/healthz:200|停掉=无法发文"
+  "postgresql|本机数据库|port:5432|DANGER|停掉=业务直接报错"
   "zerotier-one|ZeroTier 组网|zt|DANGER|停掉=内网访问立刻断开"
 )
 
-# 名称|说明|风险|可选标记（OPT=已停用/已卸载，缺失不算异常）
+# 名称|说明|风险|OPT（OPT=已停用/已卸载，缺失不算异常）
 CONTAINERS=(
-  "plnl-postgres|PostgreSQL 16|DANGER|停掉=业务直接报错"
-  "lsky-pro|图床（已停用）||OPT"
+  "app-postgres|PostgreSQL 16|DANGER|停掉=业务直接报错"
+  "old-app|已停用的旧容器||OPT"
 )
 ```
+
+- 没有这个文件也能用，只是清单里只有脚本内置的两条示例，其余全靠 `9) 未登记项` 提醒
+- 临时换一份：`SRVMENU_CONF=/path/to/other.conf srvmenu`
+- `2) 服务清单` 顶部会打印当前生效的是哪份登记表
+- **换机器时把 `/etc/srvmenu.conf` 一起带走**，装完脚本即可恢复“认识自己的服务”
 
 探测串写法：
 
@@ -125,7 +131,7 @@ CONTAINERS=(
 | `docker` | `docker info` 可执行 |
 | `none` | 只做状态显示，不探测 |
 
-风险字段：留空 = 普通操作直接执行；`DANGER` / `ADAPTER` = 停之前必须手打 `YES`。第四列写「停掉会怎样」，会原样打印给操作者看。
+风险字段：留空 = 普通操作直接执行；`DANGER` / `ADAPTER` = 停之前必须手打 `YES`。第五段写「停掉会怎样」，会原样打印给操作者看。
 
 **没登记的不会丢**：`9) 未登记项` 会把不在表里的运行中服务与容器列出来，提醒你补登记。判断「未登记」前会过滤系统自带 unit（`systemd-*`、`dbus`、`cron`、`ssh` 等）。
 

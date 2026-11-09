@@ -20,7 +20,7 @@
 # ============================================================
 set -uo pipefail
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 HTTP_TIMEOUT="${HTTP_TIMEOUT:-4}"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -626,6 +626,9 @@ srvmenu ${VERSION} —— 本机运维菜单
 更新（WorkBuddy Manager）：
   srvmenu update check              对比 GitHub 最新 Release
   srvmenu update run                执行更新（先自动快照，失败可回滚）
+  srvmenu update run --detach --yes --target=both
+                                    后台跑（管理器重启不打断，适合正走它网关时）
+  srvmenu update status             看最近一次更新的进度与校验结果
   srvmenu update points             列出回滚点
   srvmenu update rollback [时间戳]  回到某个回滚点
   srvmenu update snapshot           只打快照不更新（更新前手动留点）
@@ -804,10 +807,53 @@ wbm_verify() {
   return $okall
 }
 
+# 后台执行：放进独立的 systemd 临时单元，管理器重启也不会打断它，
+# 且不需要任何人回答交互提问（这点在「更新会掐断当前连接」时是刚需）。
+# 关键细节：先 source 安装目录的 .env，否则 WB_GITHUB_MIRROR 不生效，会退化成直连 GitHub。
+update_detached() { # $1=target $2=快照目录 → 输出单元名
+  local target="$1" dir="$2" unit
+  unit="wbm-update-$(date +%m%d-%H%M%S)"
+  systemd-run --collect --unit="$unit" --working-directory="$WBM_DIR" \
+      --setenv=WBM_UPD_TARGET="$target" \
+      --setenv=WBM_UPD_LOG="$dir/update.log" \
+      --setenv=WBM_UPD_DIR="$WBM_DIR" \
+      /bin/bash -c '
+        set -a
+        [ -f "$WBM_UPD_DIR/.env" ] && . "$WBM_UPD_DIR/.env"
+        set +a
+        cd "$WBM_UPD_DIR" || exit 1
+        ./venv/bin/python deploy/update.py --target "$WBM_UPD_TARGET" 2>&1 | tee -a "$WBM_UPD_LOG"
+        exit "${PIPESTATUS[0]}"
+      ' >/dev/null 2>&1 || return 1
+  printf '%s' "$unit"
+}
+
+update_status() { # 看最近一次（含后台）更新进行到哪
+  head1 "更新状态"
+  local dir log unit
+  dir=$(ls -1dt "$WBM_SNAP_ROOT"/*/ 2>/dev/null | head -1)
+  printf '  当前版本  %s\n' "$(wbm_version_raw)"
+  if [[ -n "$dir" && -f "$dir/update.log" ]]; then
+    log="$dir/update.log"
+    printf '  日志      %s（%s）\n' "$log" "$(date -r "$log" '+%F %T')"
+    echo
+    tail -12 "$log" | sed 's/^/  /'
+  else
+    dim "还没有更新日志"
+  fi
+  unit=$(systemctl list-units --all --no-legend 'wbm-update-*' 2>/dev/null | awk 'NR==1{print $1}')
+  if [[ -n "$unit" ]]; then
+    printf '\n  后台单元  %s → %s\n' "$unit" "$(systemctl is-active "$unit" 2>/dev/null)"
+  fi
+  echo
+  wbm_verify 10 || true
+}
+
 update_run() {
   need_root || { bad "需要 root（sudo srvmenu）"; return 1; }
   head1 "执行更新：WorkBuddy Manager"
   local raw cur out tag target ts dir free_g rc i
+  local want_target="${WB_UPDATE_TARGET:-}" auto_yes="${WB_UPDATE_YES:-0}" detach="${WB_UPDATE_DETACH:-0}"
   raw=$(wbm_version_raw); cur="${raw#v}"
 
   # 预检
@@ -833,16 +879,26 @@ update_run() {
     tag="${raw:-未知}"
   fi
 
-  printf '  更新范围：1) 全部（面板+上游，推荐）  2) 仅面板  3) 仅上游  0) 取消\n  选择: '
-  local scope; read -r scope || return 0
-  case "$scope" in
-    1) target=both ;;
-    2) target=manager ;;
-    3) target=upstream ;;
-    *) return 0 ;;
-  esac
+  if [[ -n "$want_target" ]]; then
+    case "$want_target" in
+      both|manager|upstream) target="$want_target" ;;
+      *) bad "target 只能是 both / manager / upstream"; return 1 ;;
+    esac
+    printf '  更新范围  %s（命令行指定）\n' "$target"
+  else
+    printf '  更新范围：1) 全部（面板+上游，推荐）  2) 仅面板  3) 仅上游  0) 取消\n  选择: '
+    local scope; read -r scope || return 0
+    case "$scope" in
+      1) target=both ;;
+      2) target=manager ;;
+      3) target=upstream ;;
+      *) return 0 ;;
+    esac
+  fi
 
-  confirm_yes "确认开始更新（$target）？会先做快照" || { warn "已取消"; return 0; }
+  if [[ "$auto_yes" != "1" ]]; then
+    confirm_yes "确认开始更新（$target）？会先做快照" || { warn "已取消"; return 0; }
+  fi
 
   ts=$(date +%Y%m%d-%H%M%S)
   dir="$WBM_SNAP_ROOT/$ts"
@@ -852,6 +908,19 @@ update_run() {
   else
     bad "快照失败，已中止（不留快照就不更新）"
     return 1
+  fi
+
+  if [[ "$detach" == "1" ]]; then
+    head1 "2/3 交给后台单元执行"
+    local unit
+    unit=$(update_detached "$target" "$dir") || { bad "启动后台单元失败"; return 1; }
+    ok "已提交后台执行：$unit"
+    dim "日志：$dir/update.log"
+    dim "进度：srvmenu update status     跟随：journalctl -u $unit -f"
+    dim "管理器重启不会打断它；跑完用 srvmenu update status 或 update check 看结果"
+    sleep 3
+    systemctl is-active "$unit" >/dev/null 2>&1 && dim "（3 秒后仍在运行，正常）"
+    return 0
   fi
 
   head1 "2/3 执行官方更新器"
@@ -1057,7 +1126,20 @@ case "${1:-}" in
   update)
     case "${2:-check}" in
       check)    update_check ;;
-      run)      update_run ;;
+      run)
+        shift 2
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --target=*)  export WB_UPDATE_TARGET="${1#*=}" ;;
+            --target)    export WB_UPDATE_TARGET="${2:-}"; shift ;;
+            --yes|-y)    export WB_UPDATE_YES=1 ;;
+            --detach|-d) export WB_UPDATE_DETACH=1 ;;
+            *) bad "未知参数：$1（可用 --target=both|manager|upstream --yes --detach）"; exit 1 ;;
+          esac
+          shift
+        done
+        update_run ;;
+      status)   update_status ;;
       points)   update_points ;;
       rollback)
         if [[ -n "${3:-}" ]]; then

@@ -157,7 +157,16 @@ srvmenu update run        # 全流程：预检 → 快照 → 官方更新器 �
 srvmenu update points     # 列出回滚点
 srvmenu update rollback   # 选一个回滚点（可选是否连上游一起回滚）
 srvmenu update snapshot   # 只打快照不更新（更新前手动留个点）
+srvmenu update status     # 最近一次更新的进度 + 校验结果
 ```
+
+不想回答交互、或者**当前正走这个面板的网关**（更新最后会重启面板，前台跑会掐断发起它的连接）时，用后台模式：
+
+```bash
+srvmenu update run --target=both --yes --detach
+```
+
+后台执行会先 `source` 安装目录的 `.env`，这样 `WB_GITHUB_MIRROR` 才生效；不加载时下载会退化成直连 GitHub，慢到四五分钟。跑完用 `srvmenu update status` 看结果。
 
 **注意**：只有在 `srvmenu` 里执行更新才会留快照；直接在网页面板点「一键更新」不会产生快照（那时回滚要走官方发布包手工重建）。
 

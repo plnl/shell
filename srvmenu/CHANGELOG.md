@@ -1,5 +1,16 @@
 # 变更日志
 
+## v1.2.0
+
+**更新支持非交互与后台执行（解决「更新会掐断发起它的连接」）**
+
+- `srvmenu update run --target=both|manager|upstream`：范围可由命令行给出，不再强制交互
+- `--yes`：跳过 YES 确认，适合脚本 / cron
+- `--detach`：把官方更新器放进独立的 systemd 临时单元执行
+  - 管理器自我重启不会打断它（前台执行时，更新最后那步 `systemctl restart` 恰好会把发起它的会话一起掐断）
+  - 后台单元会先 `source /opt/workbuddy-manager/.env`——否则 `WB_GITHUB_MIRROR` 不生效，下载退化成直连 GitHub（实测 11.5 MB 约 38 KB/s，要四五分钟）
+- 新增 `srvmenu update status`：当前版本 + 最近一次更新日志尾 + 后台单元状态 + 一次健康校验
+
 ## v1.1.1
 
 **登记表外置到 `/etc/srvmenu.conf`，脚本内置只留通用示例**

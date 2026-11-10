@@ -20,7 +20,7 @@
 # ============================================================
 set -uo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 HTTP_TIMEOUT="${HTTP_TIMEOUT:-4}"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -629,6 +629,12 @@ srvmenu ${VERSION} —— 本机运维菜单
   srvmenu update run --detach --yes --target=both
                                     后台跑（管理器重启不打断，适合正走它网关时）
   srvmenu update status             看最近一次更新的进度与校验结果
+  srvmenu update link               列出下载链接、上传目录与发布页 sha256（留档）
+  srvmenu update fetch              服务器端走镜像下载离线包并校验（省掉手动上传）
+  srvmenu update local [包路径]     校验本地包后用官方更新器离线更新（默认后台执行）
+        --sha256=<hex>             服务器拿不到摘要时手工指定
+        --target=both|manager|upstream   --yes   --foreground（默认后台）
+  离线包目录 /root/wbm-packages（可用 WBM_PKG_DIR 改）；同名 .meta 存官方摘要
   srvmenu update points             列出回滚点
   srvmenu update rollback [时间戳]  回到某个回滚点
   srvmenu update snapshot           只打快照不更新（更新前手动留点）
@@ -661,6 +667,242 @@ WBM_REPO="ithtelab/workbuddy-manager"
 WBM_IMAGE="${WBM_IMAGE:-workbuddy2api-wb2api:latest}"
 WBM_SNAP_ROOT="/root/backups/workbuddy-manager/pre-update"
 WBM_SVC="${WBM_SVC:-workbuddy-web}"
+
+# ── 离线升级包（issue #153 的官方通道）─────────────────────────
+# 官方 deploy/update.py 认 WB_UPDATE_PACKAGE：指向本机一份发布包 tar.gz 后，
+# 不再查 GitHub、不再下载；版本从包内 .version 读，大小 + sha256 校验照做，
+# 后面的同步/重建/重启完全一样。本脚本只把「拿包 → 留摘要 → 校验 → 喂给它」串起来。
+WBM_PKG_DIR="${WBM_PKG_DIR:-/root/wbm-packages}"
+
+wbm_pkg_release() { # 输出 5 行：tag / name / size / digest(裸 hex) / 官方下载 URL
+  local json
+  json=$(gh_get "/repos/${WBM_REPO}/releases/latest") || return 1
+  printf '%s' "$json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+a = next((x for x in d.get("assets", []) if str(x.get("name", "")).endswith(".tar.gz")), None)
+if not a:
+    sys.exit(1)
+print(d.get("tag_name", ""))
+print(a.get("name", ""))
+print(a.get("size", 0))
+print(str(a.get("digest") or "").split(":", 1)[-1])
+print(a.get("browser_download_url", ""))
+'
+}
+
+update_link() { # 18) 给出链接、上传位置、期望摘要，并把摘要留档
+  head1 "离线升级包：下载链接 / 上传位置"
+  local rel tag name size digest url mirror meta
+  if ! rel=$(wbm_pkg_release); then
+    bad "取不到 Release 信息（GitHub API 不通或限流）"
+    dim "可在本机打开 https://github.com/${WBM_REPO}/releases 查 sha256，然后直接："
+    dim "  srvmenu update local <包路径> --sha256=<发布页 sha256>"
+    return 1
+  fi
+  tag=$(printf '%s\n' "$rel" | sed -n 1p)
+  name=$(printf '%s\n' "$rel" | sed -n 2p)
+  size=$(printf '%s\n' "$rel" | sed -n 3p)
+  digest=$(printf '%s\n' "$rel" | sed -n 4p)
+  url=$(printf '%s\n' "$rel" | sed -n 5p)
+  mirror=$(wbm_env WB_GITHUB_MIRROR); mirror="${mirror:-https://gh-proxy.com/}"; mirror="${mirror%/}"
+
+  mkdir -p "$WBM_PKG_DIR" && chmod 700 "$WBM_PKG_DIR"
+  meta="$WBM_PKG_DIR/$name.meta"
+  cat > "$meta" <<EOF
+# 由 srvmenu update link 生成（$(date '+%F %T')）—— 校验离线包时读取
+TAG='$tag'
+NAME='$name'
+SIZE='$size'
+SHA256='$digest'
+URL='$url'
+MIRROR='$mirror/$url'
+FETCHED='$(date '+%F %T')'
+EOF
+  chmod 600 "$meta"
+
+  printf '  最新版本  %s     大小 %s 字节\n' "$tag" "$size"
+  printf '  官方摘要  sha256:%s\n' "${digest:-（本 Release 未提供）}"
+  printf '  直连      %s\n' "$url"
+  printf '  镜像      %s\n' "$mirror/$url"
+  echo
+  printf '  ① 本机下载（镜像通常快得多）\n'
+  printf '     curl -fL -o %s \\\n' "$name"
+  printf "       '%s'\n" "$mirror/$url"
+  printf '  ② 本机核对（macOS 用 shasum -a 256）\n'
+  printf '     sha256sum %s      # 应等于 %s\n' "$name" "$digest"
+  printf '  ③ 上传到服务器（目录已建好）\n'
+  printf '     scp %s root@<服务器IP>:%s/\n' "$name" "$WBM_PKG_DIR"
+  echo
+  ok "摘要已留档：$meta"
+  dim "上传完执行：srvmenu update local        （全程不联网）"
+  dim "想让服务器自己拉：srvmenu update fetch  （走镜像下载，仍先校验）"
+}
+
+update_fetch() { # 服务器端经镜像下载到包目录（省掉手动 scp），下载后立刻校验
+  need_root || { bad "需要 root（sudo srvmenu）"; return 1; }
+  head1 "下载离线升级包（走镜像）"
+  local rel tag name size digest url mirror meta pkg
+  if ! rel=$(wbm_pkg_release); then bad "取不到 Release 信息"; return 1; fi
+  tag=$(printf '%s\n' "$rel" | sed -n 1p)
+  name=$(printf '%s\n' "$rel" | sed -n 2p)
+  size=$(printf '%s\n' "$rel" | sed -n 3p)
+  digest=$(printf '%s\n' "$rel" | sed -n 4p)
+  url=$(printf '%s\n' "$rel" | sed -n 5p)
+  mirror=$(wbm_env WB_GITHUB_MIRROR); mirror="${mirror:-https://gh-proxy.com/}"; mirror="${mirror%/}"
+
+  mkdir -p "$WBM_PKG_DIR" && chmod 700 "$WBM_PKG_DIR"
+  meta="$WBM_PKG_DIR/$name.meta"
+  cat > "$meta" <<EOF
+TAG='$tag'
+NAME='$name'
+SIZE='$size'
+SHA256='$digest'
+URL='$url'
+MIRROR='$mirror/$url'
+FETCHED='$(date '+%F %T')'
+EOF
+  chmod 600 "$meta"
+  pkg="$WBM_PKG_DIR/$name"
+  printf '  目标      %s  （%s，%s 字节）\n' "$pkg" "$tag" "$size"
+  if [[ -f "$pkg" ]] && wbm_pkg_verify "$pkg" >/dev/null 2>&1; then
+    ok "本地已有校验通过的同版本包，跳过下载"; return 0
+  fi
+  dim "下载：$mirror/$url"
+  if ! curl -fL --retry 2 --max-time 300 -o "$pkg.part" "$mirror/$url" 2>/dev/null; then
+    warn "镜像失败，回退直连"; rm -f "$pkg.part"
+    curl -fL --retry 2 --max-time 300 -o "$pkg.part" "$url" || { bad "下载失败"; return 1; }
+  fi
+  mv -f "$pkg.part" "$pkg"
+  if wbm_pkg_verify "$pkg"; then ok "包已就位：$pkg"; else bad "下载到的包校验不通过，已保留文件供排查"; return 1; fi
+  dim "下一步：srvmenu update local"
+}
+
+WBM_PKG_VER=""
+wbm_pkg_verify() { # $1=包 $2=可选期望 sha256 → 版本写入 WBM_PKG_VER
+  local pkg="$1" want="${2:-}" meta size digest ver
+  local TAG NAME SIZE SHA256 URL MIRROR FETCHED
+  WBM_PKG_VER=""
+  [[ -f "$pkg" ]] || { bad "找不到离线包：$pkg"; return 1; }
+  size=$(stat -c %s "$pkg" 2>/dev/null || echo 0)
+  (( size > 100000 )) || { bad "包只有 ${size} 字节，看起来是被截断的下载"; return 1; }
+
+  meta="$pkg.meta"
+  if [[ -f "$meta" ]]; then
+    # shellcheck disable=SC1090
+    source "$meta"
+    [[ -z "$want" ]] && want="${SHA256:-}"
+    if [[ -n "${SIZE:-}" && "$size" != "$SIZE" ]]; then
+      bad "大小不符：本地 ${size}，发布页 ${SIZE} —— 多半没下完"; return 1
+    fi
+    ok "清单：$meta（${TAG:-?}）"
+  fi
+
+  dim "检查 gzip 完整性…"
+  gzip -t "$pkg" 2>/dev/null || { bad "gzip 校验失败，包不完整"; return 1; }
+  dim "读取包内 .version…"
+  ver=$(python3 - "$pkg" <<'PY'
+import sys, tarfile
+try:
+    with tarfile.open(sys.argv[1], 'r:gz') as t:
+        for m in t.getmembers():
+            if m.name == '.version' or m.name.endswith('/.version'):
+                fh = t.extractfile(m)
+                if fh:
+                    print(fh.read(64).decode('utf-8', 'replace').strip())
+                    break
+except Exception:
+    pass
+PY
+)
+  [[ -n "$ver" ]] || { bad "包里没有 .version —— 不是本项目的发布包"; return 1; }
+  if [[ -f "$meta" && -n "${TAG:-}" && "$ver" != "$TAG" ]]; then
+    bad "包内版本 $ver 与清单 $TAG 不一致（拿错包或清单过期）"; return 1
+  fi
+
+  digest=$(sha256sum "$pkg" | awk '{print $1}')
+  want="${want#sha256:}"; want="${want,,}"
+  if [[ -z "$want" ]]; then
+    bad "没有发布页 sha256，拒绝安装（不能拿「能解开」当校验）"
+    dim "本机算出：$digest"
+    dim "到 https://github.com/${WBM_REPO}/releases 核对后执行："
+    dim "  srvmenu update local '$pkg' --sha256=$digest"
+    return 1
+  fi
+  if [[ "$digest" != "$want" ]]; then
+    bad "sha256 不符，已拒绝安装"
+    dim "期望：$want"; dim "实际：$digest"
+    return 1
+  fi
+  ok "摘要与发布页一致：$digest"
+  ok "包结构完整，版本 $ver"
+  WBM_PKG_VER="$ver"
+  return 0
+}
+
+update_local() { # 19) 校验本地包 → 快照 → 官方更新器（不联网）
+  need_root || { bad "需要 root（sudo srvmenu）"; return 1; }
+  head1 "离线更新：校验本地包后不走网络"
+  local pkg="" want_sha="" target="both" auto_yes=0 detach=1 ver meta sha
+  # 默认后台执行：更新最后会重启面板，而当前会话可能正走它的网关
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --sha256=*)   want_sha="${1#*=}" ;;
+      --target=*)   target="${1#*=}" ;;
+      --yes|-y)     auto_yes=1 ;;
+      --foreground|-f) detach=0 ;;
+      -*) bad "未知参数：$1"; return 1 ;;
+      *)  pkg="$1" ;;
+    esac
+    shift
+  done
+
+  mkdir -p "$WBM_PKG_DIR" && chmod 700 "$WBM_PKG_DIR"
+  if [[ -z "$pkg" ]]; then
+    local -a found=()
+    while IFS= read -r f; do found+=("$f"); done < <(ls -1t "$WBM_PKG_DIR"/*.tar.gz 2>/dev/null)
+    if (( ${#found[@]} == 0 )); then
+      bad "$WBM_PKG_DIR 里没有 .tar.gz"
+      dim "先跑菜单 18 拿下载链接与上传位置，或 srvmenu update fetch"
+      return 1
+    fi
+    if [[ -t 0 ]]; then
+      printf '  选择离线包：\n'
+      local i
+      for i in "${!found[@]}"; do printf '   %2d) %s\n' "$((i+1))" "${found[$i]}"; done
+      printf '  选择 [1]: '; read -r i
+      i="${i:-1}"
+      pkg="${found[$((i-1))]:-${found[0]}}"
+    else
+      pkg="${found[0]}"
+    fi
+  fi
+  pkg="$(cd "$(dirname "$pkg")" && pwd)/$(basename "$pkg")"
+  printf '  使用包    %s\n' "$pkg"
+
+  wbm_pkg_verify "$pkg" "$want_sha" || return 1
+  ver="$WBM_PKG_VER"
+  meta="$pkg.meta"
+  sha="${want_sha#sha256:}"
+  if [[ -z "$sha" && -f "$meta" ]]; then
+    sha=$(sed -n "s/^SHA256='//p" "$meta" | sed "s/'.*$//" | head -1)
+  fi
+
+  printf '  当前版本  %s   →   包内版本 %s\n' "$(wbm_version_raw)" "$ver"
+  if [[ "$(wbm_version_raw)" == "$ver" ]]; then
+    warn "包与当前版本相同，继续等于「重装同一版本」（可用于修复）"
+    if [[ "$auto_yes" != "1" ]]; then confirm_yes "确认重装？" || { warn "已取消"; return 0; }; fi
+  fi
+
+  export WB_UPDATE_PACKAGE="$pkg"
+  export WB_UPDATE_PACKAGE_SHA256="$sha"
+  export WB_UPDATE_PACKAGE_TAG="$ver"
+  export WB_UPDATE_TARGET="$target"
+  export WB_UPDATE_YES="$auto_yes"
+  export WB_UPDATE_DETACH="$detach"
+  dim "已设置 WB_UPDATE_PACKAGE / WB_UPDATE_PACKAGE_SHA256 —— 更新器不会联网下载"
+  update_run
+}
 
 wbm_version_raw() { tr -d '[:space:]' < "$WBM_DIR/.version" 2>/dev/null; }
 wbm_env() { # 从 .env 取一个键，取不到就静默返回空
@@ -729,7 +971,7 @@ update_check() {
   echo
   printf '%s\n' "$body" | head -14 | sed 's/^/    /'
   echo
-  dim "下一步：菜单 15（执行更新），或 srvmenu update run"
+  dim "下一步：菜单 15（在线更新）；下载卡住就走菜单 18 → 19（离线包）"
 }
 
 update_points() {
@@ -817,10 +1059,15 @@ update_detached() { # $1=target $2=快照目录 → 输出单元名
       --setenv=WBM_UPD_TARGET="$target" \
       --setenv=WBM_UPD_LOG="$dir/update.log" \
       --setenv=WBM_UPD_DIR="$WBM_DIR" \
+      --setenv=WBM_UPD_PKG="${WB_UPDATE_PACKAGE:-}" \
+      --setenv=WBM_UPD_PKG_SHA="${WB_UPDATE_PACKAGE_SHA256:-}" \
       /bin/bash -c '
         set -a
         [ -f "$WBM_UPD_DIR/.env" ] && . "$WBM_UPD_DIR/.env"
         set +a
+        # 离线包放在 .env 之后再设：万一 .env 里有同名键也不会被覆盖
+        [ -n "$WBM_UPD_PKG" ] && export WB_UPDATE_PACKAGE="$WBM_UPD_PKG"
+        [ -n "$WBM_UPD_PKG_SHA" ] && export WB_UPDATE_PACKAGE_SHA256="$WBM_UPD_PKG_SHA"
         cd "$WBM_UPD_DIR" || exit 1
         ./venv/bin/python deploy/update.py --target "$WBM_UPD_TARGET" 2>&1 | tee -a "$WBM_UPD_LOG"
         exit "${PIPESTATUS[0]}"
@@ -855,6 +1102,7 @@ update_run() {
   local raw cur out tag target ts dir free_g rc i
   local want_target="${WB_UPDATE_TARGET:-}" auto_yes="${WB_UPDATE_YES:-0}" detach="${WB_UPDATE_DETACH:-0}"
   raw=$(wbm_version_raw); cur="${raw#v}"
+  local offline="${WB_UPDATE_PACKAGE:-}"
 
   # 预检
   [[ -x "$WBM_DIR/venv/bin/python" ]] || { bad "缺少 $WBM_DIR/venv/bin/python"; return 1; }
@@ -867,12 +1115,22 @@ update_run() {
     confirm_yes "仍然继续？" || { warn "已取消"; return 0; }
   fi
 
-  if out=$(wbm_latest); then
+  if [[ -n "$offline" ]]; then
+    tag="${WB_UPDATE_PACKAGE_TAG:-离线包}"
+    printf '  当前 %s   →   %s（离线包，不查 GitHub）\n' "${raw:-未知}" "$tag"
+    printf '  包路径    %s\n' "$offline"
+    if [[ -n "$cur" && "$cur" == "${tag#v}" && "$auto_yes" != "1" ]]; then
+      warn "包版本与当前相同，继续等于「重装同一版本」（可用于修复）"
+      confirm_yes "确认重装？" || { warn "已取消"; return 0; }
+    fi
+  elif out=$(wbm_latest); then
     tag=$(printf '%s' "$out" | sed -n 1p)
     printf '  当前 %s   →   最新 %s\n' "${raw:-未知}" "$tag"
     if [[ -n "$cur" && "$cur" == "${tag#v}" ]]; then
       warn "已经是最新版本，继续等于「重装同一版本」（可用于修复）"
-      confirm_yes "确认重装？" || { warn "已取消"; return 0; }
+      if [[ "$auto_yes" != "1" ]]; then
+        confirm_yes "确认重装？" || { warn "已取消"; return 0; }
+      fi
     fi
   else
     warn "取不到最新版本号（可能网络/限流），仍可让官方更新器自行判断"
@@ -924,6 +1182,11 @@ update_run() {
   fi
 
   head1 "2/3 执行官方更新器"
+  if [[ -n "$offline" ]]; then
+    export WB_UPDATE_PACKAGE="$offline"
+    export WB_UPDATE_PACKAGE_SHA256="${WB_UPDATE_PACKAGE_SHA256:-}"
+    dim "离线模式：WB_UPDATE_PACKAGE=$offline（更新器跳过下载）"
+  fi
   dim "cd $WBM_DIR && ./venv/bin/python deploy/update.py --target $target"
   pushd . >/dev/null 2>&1
   cd "$WBM_DIR" || { bad "进不去 $WBM_DIR"; return 1; }
@@ -1052,8 +1315,9 @@ main_menu() {
   ── 更新（WorkBuddy Manager）─────────────────────
   14) 检查更新          15) 执行更新（自动快照）
   16) 回滚到更新点      17) 回滚点列表
+  18) 离线包链接/上传   19) 用本地包更新（不联网）
   ── 其他 ────────────────────────────────────────
-  18) 帮助
+  20) 帮助
    0) 退出
 EOF
     printf '请选择: '
@@ -1076,7 +1340,9 @@ EOF
       15) update_run ;;
       16) update_rollback_menu ;;
       17) update_points ;;
-      18) usage ;;
+      18) update_link ;;
+      19) update_local ;;
+      20) usage ;;
       0|q|quit|exit) return 0 ;;
       *) warn "无效选项：$c" ;;
     esac
@@ -1140,6 +1406,11 @@ case "${1:-}" in
         done
         update_run ;;
       status)   update_status ;;
+      link)     update_link ;;
+      fetch)    update_fetch ;;
+      local|offline)
+        shift 2
+        update_local "$@" ;;
       points)   update_points ;;
       rollback)
         if [[ -n "${3:-}" ]]; then

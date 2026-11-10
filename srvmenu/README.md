@@ -51,7 +51,8 @@
 | 10/11 启停 | systemd 服务 / Docker 容器 启动、停止、重启、看日志 |
 | 12 nginx | 语法检查、重载、看生效配置、进程与端口 |
 | 13 磁盘清理 | 悬空镜像 / 构建缓存 / 已停容器（均需手打 `YES`） |
-| 14~17 更新 | 检查更新、执行更新、回滚、回滚点列表（见下） |
+| 14~17 更新 | 检查更新、在线更新、回滚、回滚点列表（见下） |
+| 18/19 离线包 | 下载链接与上传位置、用本地包校验后不联网更新 |
 
 ## 依赖与安装
 
@@ -167,6 +168,43 @@ srvmenu update run --target=both --yes --detach
 ```
 
 后台执行会先 `source` 安装目录的 `.env`，这样 `WB_GITHUB_MIRROR` 才生效；不加载时下载会退化成直连 GitHub，慢到四五分钟。跑完用 `srvmenu update status` 看结果。
+
+### 离线升级包（菜单 18 / 19）：下载卡住或服务器不通 GitHub 时
+
+官方 `deploy/update.py` 原生支持 `WB_UPDATE_PACKAGE`（issue #153）：指向本机一份发布包 `tar.gz` 后
+**不再查 GitHub、不再下载**，版本从包内 `.version` 读，大小 + sha256 校验照做，后续同步 / 重建 / 重启
+完全一样。`srvmenu` 把「拿链接 → 留摘要 → 校验 → 喂给更新器」串成两项菜单。
+
+```bash
+srvmenu update link                        # 18) 打印直连/镜像链接、上传目录、发布页 sha256，并写 .meta 留档
+srvmenu update fetch                       # 让服务器自己经镜像下载到包目录（省掉手动上传），下载后立即校验
+srvmenu update local                       # 19) 校验本地包 → 快照 → 官方更新器（全程不联网）
+srvmenu update local <包> --sha256=<hex>   # 服务器拿不到摘要时手工指定
+```
+
+包放在 `/root/wbm-packages/`（可用 `WBM_PKG_DIR` 改），同名 `.meta` 存官方 tag / 大小 / sha256：
+
+```bash
+# ① 本机下载（镜像通常 1~2 秒；服务器直连 GitHub 实测可能只有 10 KB/s）
+curl -fL -o workbuddy-manager-v2.11.13.tar.gz \
+  'https://gh-proxy.com/https://github.com/ithtelab/workbuddy-manager/releases/download/v2.11.13/workbuddy-manager-v2.11.13.tar.gz'
+# ② 核对摘要（macOS 用 shasum -a 256），应等于发布页 digest
+sha256sum workbuddy-manager-v2.11.13.tar.gz
+# ③ 上传
+scp workbuddy-manager-v2.11.13.tar.gz root@<服务器IP>:/root/wbm-packages/
+# ④ 更新（默认后台执行，重启面板不会掐断会话）
+srvmenu update local --yes --target=both
+```
+
+**校验四关**：大小与发布页一致 → `gzip -t` 完整 → 能读出包内 `.version` 且与清单 tag 相符 →
+`sha256` 与发布页 digest 一致。任一不过即拒绝安装、不打快照、返回非零；**没有摘要也拒绝**
+（不能拿「能解开」当校验）。`update fetch` 下载后走同一套校验。
+
+`update local` 默认后台执行；要前台加 `--foreground`。离线包变量在后台单元里于 `source .env`
+**之后**设置，避免被 `.env` 里的同名键覆盖。
+
+`update link` 只在准备阶段查一次 GitHub API 取摘要；服务器完全不通外网时跳过它，
+在本机查好 digest 后用 `update local <包> --sha256=<hex>` 即可，更新阶段仍是纯离线。
 
 **注意**：只有在 `srvmenu` 里执行更新才会留快照；直接在网页面板点「一键更新」不会产生快照（那时回滚要走官方发布包手工重建）。
 

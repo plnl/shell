@@ -1,5 +1,20 @@
 # 变更日志
 
+## v1.3.0
+
+**新增离线升级包通道（菜单 18 / 19）—— 更新阶段完全不走网络**
+
+- 官方 `deploy/update.py` 支持 `WB_UPDATE_PACKAGE`（issue #153）：给一份本机 tar.gz 即跳过
+  GitHub 查询与下载，版本取包内 `.version`，大小 + sha256 校验照做。srvmenu 把它串成菜单
+- `srvmenu update link`：打印直连/镜像链接、上传目录、发布页 digest，并写 `<包名>.meta` 留档
+- `srvmenu update fetch`：服务器端经镜像下载到包目录并立即校验（不想手动 scp 时用），已有合格包则跳过
+- `srvmenu update local`：校验本地包 → 快照 → 官方更新器离线更新（默认后台单元执行）
+  - 四关校验：大小 / `gzip -t` / 包内 `.version` 与清单 tag / sha256 与发布页一致
+  - 任一不过即拒绝、不打快照、返回非零；**没有摘要也拒绝**，不留「能解开就算过」的口子
+  - 支持 `--sha256=`、`--target=`、`--yes`、`--foreground`
+- 后台单元在 `source .env` 之后才设置离线包变量，避免被 `.env` 同名键覆盖
+- `update check` 的下一步提示改为「下载卡住就走菜单 18 → 19」
+
 ## v1.2.0
 
 **更新支持非交互与后台执行（解决「更新会掐断发起它的连接」）**

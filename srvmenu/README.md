@@ -5,7 +5,7 @@
 给「`systemctl` 看得见一半、`docker ps` 看得见另一半、nginx 还偏偏不归 systemd」的服务器用。
 
 ```
-════ srvmenu 1.4.0  ·  myserver  ·  2026-11-05 15:50:02 ══
+════ srvmenu 1.4.1  ·  myserver  ·  2026-11-05 15:50:02 ══
   ── 查看 ────────────────────────────────────────
    1) 运行概览           2) 服务清单
    3) 健康检查           4) 端口占用
@@ -115,11 +115,15 @@ CONTAINERS=(
   "app-postgres|PostgreSQL 16|DANGER|停掉=业务直接报错"
   "old-app|已停用的旧容器||OPT"
 )
+
+# 可选：健康检查里的「站点 HTTPS」项（--resolve 到 127.0.0.1 验证本机回源）
+BLOG_DOMAIN=www.example.com
 ```
 
 - 没有这个文件也能用，只是清单里只有脚本内置的两条示例，其余全靠 `9) 未登记项` 提醒
 - 临时换一份：`SRVMENU_CONF=/path/to/other.conf srvmenu`
 - `2) 服务清单` 顶部会打印当前生效的是哪份登记表
+- `BLOG_DOMAIN`：健康检查会用 `--resolve` 把该域名指到 `127.0.0.1` 验证本机回源；不配置就跳过这一项，换机器不会误报
 - **换机器时把 `/etc/srvmenu.conf` 一起带走**，装完脚本即可恢复“认识自己的服务”
 
 探测串写法：

@@ -20,7 +20,7 @@
 # ============================================================
 set -uo pipefail
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 HTTP_TIMEOUT="${HTTP_TIMEOUT:-4}"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -62,6 +62,10 @@ if [[ -r "$SRVMENU_CONF" ]]; then
     SRVMENU_CONF_SRC="$SRVMENU_CONF"
   fi
 fi
+
+# 健康检查里的「站点 HTTPS」项（可选）：在 srvmenu.conf 写 BLOG_DOMAIN=www.example.com，
+# 会用 --resolve 把该域名指到 127.0.0.1 验证本机回源；不配置则跳过，避免在别的机器上误报。
+BLOG_DOMAIN="${BLOG_DOMAIN:-}"
 
 # 判断「未登记」时要忽略的系统自带 unit（比较前会去掉 .service 后缀）
 IGNORE_UNIT_RE='^(systemd-|dbus|cron|ssh|apparmor|atd|exim4|e2scrub|fstrim|man-db|apt-daily|dpkg-db-backup|keyboard-setup|console-setup|ifupdown|qemu-guest-agent|networking|rsyslog|getty@|user@|serial-getty|polkit|modprobe|cgcr|blk-availability|user-runtime-dir|containerd|ufw|docker-)'
@@ -286,11 +290,15 @@ health() {
   else
     bad "WorkBuddy 上游 7863 不通"; fails=$((fails + 1))
   fi
-  if curl -skf -o /dev/null -m "$HTTP_TIMEOUT" --resolve "www.bende.site:443:127.0.0.1" \
-        "https://www.bende.site/" 2>/dev/null; then
-    ok "博客 HTTPS（www.bende.site 回源本机 443）"
+  if [[ -n "$BLOG_DOMAIN" ]]; then
+    if curl -skf -o /dev/null -m "$HTTP_TIMEOUT" --resolve "${BLOG_DOMAIN}:443:127.0.0.1" \
+          "https://${BLOG_DOMAIN}/" 2>/dev/null; then
+      ok "站点 HTTPS（${BLOG_DOMAIN} 回源本机 443）"
+    else
+      bad "站点 HTTPS 不通（${BLOG_DOMAIN}）"; fails=$((fails + 1))
+    fi
   else
-    bad "博客 HTTPS 不通"; fails=$((fails + 1))
+    dim "站点 HTTPS：未配置 BLOG_DOMAIN，跳过"
   fi
   if nginx -t >/dev/null 2>&1; then
     ok "nginx 配置语法"
@@ -647,6 +655,7 @@ srvmenu ${VERSION} —— 本机运维菜单
   srvmenu docker <start|stop|restart> <容器>
   srvmenu nginx check|reload
   srvmenu health --quiet            只输出异常项（可放进 cron / 监控）
+  健康检查的「站点 HTTPS」项由 srvmenu.conf 的 BLOG_DOMAIN 控制（不配则跳过）
 
 三层托管的区别（记牢，排查时会救命）：
   systemd    业务服务、zerotier-one、docker …              用 systemctl

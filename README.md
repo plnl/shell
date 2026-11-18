@@ -9,7 +9,7 @@
 | [`ipblock/`](./ipblock) | IP 封禁 / 白名单管理，支持 lastb 自动封禁、按段聚合、DDNS 动态白名单、导入系统现有防火墙规则、SSH 登录方式管理 | v2.10 | Debian/Ubuntu/CentOS，nftables 或 ipset+iptables |
 | [`ipblock-bt/`](./ipblock-bt) | 同上，但资源命名全部隔离，专供装了**宝塔面板 + ufw/firewalld** 的机器使用 | v1.3 | 宝塔面板共存场景 |
 | [`sshmenu/`](./sshmenu) | SSH 登录方式与密钥管理：查看/切换登录方式、安装密钥、root 策略、改端口、配置备份回滚 | v1.0 | 任意装了 openssh-server 的 Linux |
-| [`srvmenu/`](./srvmenu) | 本机运维菜单：systemd / Docker / init.d 三层统一查看、健康检查、端口占用、资源与备份状态，含启停、nginx 重载、磁盘清理与更新回滚 | v1.1 | Debian/Ubuntu（需 bash ≥3.2、iproute2；有 systemd / docker 功能更全） |
+| [`srvmenu/`](./srvmenu) | 本机运维菜单：systemd / Docker / init.d 三层统一查看、健康检查、端口占用、资源与备份状态，含启停、nginx 重载、磁盘清理与更新回滚 | v1.4 | Debian/Ubuntu（需 bash ≥3.2、iproute2；有 systemd / docker 功能更全） |
 
 ## 文档
 

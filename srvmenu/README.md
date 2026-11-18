@@ -5,7 +5,7 @@
 给「`systemctl` 看得见一半、`docker ps` 看得见另一半、nginx 还偏偏不归 systemd」的服务器用。
 
 ```
-════ srvmenu 1.1.0  ·  myserver  ·  2026-11-05 15:50:02 ══
+════ srvmenu 1.4.0  ·  myserver  ·  2026-11-05 15:50:02 ══
   ── 查看 ────────────────────────────────────────
    1) 运行概览           2) 服务清单
    3) 健康检查           4) 端口占用
@@ -179,7 +179,8 @@ srvmenu update run --target=both --yes --detach
 srvmenu update link                        # 18) 打印直连/镜像链接、上传目录、发布页 sha256，并写 .meta 留档
 srvmenu update fetch                       # 让服务器自己经镜像下载到包目录（省掉手动上传），下载后立即校验
 srvmenu update local                       # 19) 校验本地包 → 快照 → 官方更新器（全程不联网）
-srvmenu update local <包> --sha256=<hex>   # 服务器拿不到摘要时手工指定
+srvmenu update local <包> --dry-run        # 只跑校验不安装（预检刚上传的包）
+srvmenu update local <包> --sha256=<hex>   # 手工指定摘要（覆盖自动查询）
 ```
 
 包放在 `/root/wbm-packages/`（可用 `WBM_PKG_DIR` 改），同名 `.meta` 存官方 tag / 大小 / sha256：
@@ -199,6 +200,11 @@ srvmenu update local --yes --target=both
 **校验四关**：大小与发布页一致 → `gzip -t` 完整 → 能读出包内 `.version` 且与清单 tag 相符 →
 `sha256` 与发布页 digest 一致。任一不过即拒绝安装、不打快照、返回非零；**没有摘要也拒绝**
 （不能拿「能解开」当校验）。`update fetch` 下载后走同一套校验。
+
+包旁**没有 `.meta`** 时（例如只手动上传了 tar.gz），`update local` 会拿包内 `.version` 的 tag
+去发布页查官方 digest：先核对「文件名」和「大小」都跟本地一致才采用，并顺手把 `.meta` 补写到包旁，
+下次免查。查不到、版本不存在、或文件名/大小对不上，仍然拒绝——摘要只能来自发布页，
+自动补摘要只是省掉手抄 sha256，不降低校验强度。
 
 `update local` 默认后台执行；要前台加 `--foreground`。离线包变量在后台单元里于 `source .env`
 **之后**设置，避免被 `.env` 里的同名键覆盖。

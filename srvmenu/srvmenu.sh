@@ -20,7 +20,7 @@
 # ============================================================
 set -uo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 HTTP_TIMEOUT="${HTTP_TIMEOUT:-4}"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -632,7 +632,9 @@ srvmenu ${VERSION} —— 本机运维菜单
   srvmenu update link               列出下载链接、上传目录与发布页 sha256（留档）
   srvmenu update fetch              服务器端走镜像下载离线包并校验（省掉手动上传）
   srvmenu update local [包路径]     校验本地包后用官方更新器离线更新（默认后台执行）
-        --sha256=<hex>             服务器拿不到摘要时手工指定
+        没有 .meta 时自动向发布页查询同名同大小包的官方 sha256，查到会补写 .meta
+        --sha256=<hex>             手工指定摘要（覆盖自动查询）
+        --dry-run                  只校验不安装
         --target=both|manager|upstream   --yes   --foreground（默认后台）
   离线包目录 /root/wbm-packages（可用 WBM_PKG_DIR 改）；同名 .meta 存官方摘要
   srvmenu update points             列出回滚点
@@ -674,9 +676,14 @@ WBM_SVC="${WBM_SVC:-workbuddy-web}"
 # 后面的同步/重建/重启完全一样。本脚本只把「拿包 → 留摘要 → 校验 → 喂给它」串起来。
 WBM_PKG_DIR="${WBM_PKG_DIR:-/root/wbm-packages}"
 
-wbm_pkg_release() { # 输出 5 行：tag / name / size / digest(裸 hex) / 官方下载 URL
-  local json
-  json=$(gh_get "/repos/${WBM_REPO}/releases/latest") || return 1
+wbm_pkg_release() { # [tag] 输出 5 行：tag / name / size / digest(裸 hex) / 官方下载 URL
+  local json path
+  if [[ -n "${1:-}" ]]; then
+    path="/repos/${WBM_REPO}/releases/tags/${1}"
+  else
+    path="/repos/${WBM_REPO}/releases/latest"
+  fi
+  json=$(gh_get "$path") || return 1
   printf '%s' "$json" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
@@ -689,6 +696,39 @@ print(a.get("size", 0))
 print(str(a.get("digest") or "").split(":", 1)[-1])
 print(a.get("browser_download_url", ""))
 '
+}
+
+wbm_pkg_write_meta() { # $1=包 $2=tag $3=sha256 —— 校验时自动补写清单
+  local pkg="$1" tag="$2" sha="$3" name size url mirror
+  name=$(basename "$pkg")
+  size=$(stat -c %s "$pkg" 2>/dev/null || echo 0)
+  mirror=$(wbm_env WB_GITHUB_MIRROR); mirror="${mirror:-https://gh-proxy.com/}"; mirror="${mirror%/}"
+  url="https://github.com/${WBM_REPO}/releases/download/${tag}/${name}"
+  cat > "$pkg.meta" <<EOF
+# 由 srvmenu 校验时自动补写（$(date '+%F %T')）—— 摘要取自 GitHub Release 官方 digest
+TAG='$tag'
+NAME='$name'
+SIZE='$size'
+SHA256='$sha'
+URL='$url'
+MIRROR='$mirror/$url'
+FETCHED='$(date '+%F %T')'
+EOF
+  chmod 600 "$pkg.meta"
+}
+
+wbm_pkg_digest_from_release() { # $1=包 $2=包内版本 → 校验 name+size 后输出官方 sha256
+  local pkg="$1" ver="$2" rel name size digest size_local
+  [[ -n "$ver" ]] || return 1
+  rel=$(wbm_pkg_release "$ver") || return 1
+  name=$(printf '%s\n' "$rel" | sed -n 2p)
+  size=$(printf '%s\n' "$rel" | sed -n 3p)
+  digest=$(printf '%s\n' "$rel" | sed -n 4p)
+  size_local=$(stat -c %s "$pkg" 2>/dev/null || echo 0)
+  [[ "$name" == "$(basename "$pkg")" ]] || { warn "发布页文件名 $name 与本地 $(basename "$pkg") 不一致，不敢套用" >&2; return 1; }
+  [[ -n "$digest" ]] || { warn "该 Release 未提供 digest，无法自动校验" >&2; return 1; }
+  [[ "$size" == "$size_local" ]] || { warn "发布页大小 $size 与本地 $size_local 不一致，不敢套用" >&2; return 1; }
+  printf '%s\n' "$digest"
 }
 
 update_link() { # 18) 给出链接、上传位置、期望摘要，并把摘要留档
@@ -780,7 +820,7 @@ EOF
 
 WBM_PKG_VER=""
 wbm_pkg_verify() { # $1=包 $2=可选期望 sha256 → 版本写入 WBM_PKG_VER
-  local pkg="$1" want="${2:-}" meta size digest ver
+  local pkg="$1" want="${2:-}" meta size digest ver auto
   local TAG NAME SIZE SHA256 URL MIRROR FETCHED
   WBM_PKG_VER=""
   [[ -f "$pkg" ]] || { bad "找不到离线包：$pkg"; return 1; }
@@ -823,11 +863,18 @@ PY
   digest=$(sha256sum "$pkg" | awk '{print $1}')
   want="${want#sha256:}"; want="${want,,}"
   if [[ -z "$want" ]]; then
-    bad "没有发布页 sha256，拒绝安装（不能拿「能解开」当校验）"
-    dim "本机算出：$digest"
-    dim "到 https://github.com/${WBM_REPO}/releases 核对后执行："
-    dim "  srvmenu update local '$pkg' --sha256=$digest"
-    return 1
+    dim "没有 .meta，向发布页自动查询 ${ver} 的官方摘要…"
+    if auto=$(wbm_pkg_digest_from_release "$pkg" "$ver") && [[ "$auto" =~ ^[0-9a-f]{64}$ ]]; then
+      want="$auto"
+      ok "已从发布页取得官方摘要：sha256:$want"
+      wbm_pkg_write_meta "$pkg" "$ver" "$want" && dim "已补写清单：$pkg.meta（下次免查）"
+    else
+      bad "没有发布页 sha256，拒绝安装（不能拿「能解开」当校验）"
+      dim "本机算出：$digest"
+      dim "到 https://github.com/${WBM_REPO}/releases 核对后执行："
+      dim "  srvmenu update local '$pkg' --sha256=$digest"
+      return 1
+    fi
   fi
   if [[ "$digest" != "$want" ]]; then
     bad "sha256 不符，已拒绝安装"
@@ -843,13 +890,14 @@ PY
 update_local() { # 19) 校验本地包 → 快照 → 官方更新器（不联网）
   need_root || { bad "需要 root（sudo srvmenu）"; return 1; }
   head1 "离线更新：校验本地包后不走网络"
-  local pkg="" want_sha="" target="both" auto_yes=0 detach=1 ver meta sha
+  local pkg="" want_sha="" target="both" auto_yes=0 detach=1 dry_run=0 ver meta sha
   # 默认后台执行：更新最后会重启面板，而当前会话可能正走它的网关
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --sha256=*)   want_sha="${1#*=}" ;;
       --target=*)   target="${1#*=}" ;;
       --yes|-y)     auto_yes=1 ;;
+      --dry-run)    dry_run=1 ;;
       --foreground|-f) detach=0 ;;
       -*) bad "未知参数：$1"; return 1 ;;
       *)  pkg="$1" ;;
@@ -882,6 +930,10 @@ update_local() { # 19) 校验本地包 → 快照 → 官方更新器（不联�
 
   wbm_pkg_verify "$pkg" "$want_sha" || return 1
   ver="$WBM_PKG_VER"
+  if [[ "$dry_run" == "1" ]]; then
+    ok "dry-run：校验全部通过（版本 $ver），未安装任何东西"
+    return 0
+  fi
   meta="$pkg.meta"
   sha="${want_sha#sha256:}"
   if [[ -z "$sha" && -f "$meta" ]]; then
